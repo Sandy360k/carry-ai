@@ -1,0 +1,78 @@
+# carry-ai dependencies
+# ====================
+# Install: pip install -r requirements.txt
+#
+# Minimal install (API mode only):
+#   pip install psutil cryptography flask requests
+#
+# Full install (local + API + all features):
+#   pip install -r requirements.txt
+#
+# Platform-specific deps are commented out -- install as needed.
+
+# ---------------------------------------------------------------------------
+# Core (required)
+# ---------------------------------------------------------------------------
+psutil>=5.9.0                # RAM/CPU detection, process tree kill
+cryptography>=41.0.0         # Fernet encryption for API keys (PBKDF2+AES)
+flask>=3.0.0                 # Web UI server (localhost:8080)
+requests>=2.31.0             # HTTP client for API providers + HuggingFace
+
+# ---------------------------------------------------------------------------
+# LLM Providers (install at least one for API mode)
+# ---------------------------------------------------------------------------
+anthropic>=0.30.0            # Anthropic Claude API (Messages format)
+openai>=1.30.0               # OpenAI + compatible APIs (Groq, OpenRouter)
+google-auth>=2.29.0          # Google OAuth2 for Gemini
+google-auth-oauthlib>=1.2.0  # OAuth2 browser flow for Gemini
+
+# ---------------------------------------------------------------------------
+# Model Management
+# ---------------------------------------------------------------------------
+huggingface-hub>=0.23.0      # GGUF model search/download from HuggingFace Hub
+                             # (optional: requests fallback available without this)
+
+# ---------------------------------------------------------------------------
+# Agent Tools
+# ---------------------------------------------------------------------------
+pyautogui>=0.9.54            # Screenshot, mouse click, keyboard automation
+pyperclip>=1.8.2             # Clipboard read/write/wipe
+
+# ---------------------------------------------------------------------------
+# MCP (Model Context Protocol)
+# ---------------------------------------------------------------------------
+# Not required -- carry-ai includes a built-in JSON-RPC client for MCP servers.
+# Install the SDK only if using MCP servers that require it:
+# mcp>=1.0.0
+
+# ---------------------------------------------------------------------------
+# Platform-specific (Windows)
+# ---------------------------------------------------------------------------
+# wmi>=1.5.1                 # WMI eject detection (preferred, event-driven)
+# pywin32>=306               # COM support for WMI
+# Note: ctypes polling fallback works without these.
+
+# ---------------------------------------------------------------------------
+# Platform-specific (Linux)
+# ---------------------------------------------------------------------------
+# pyudev>=0.24.0             # Python udev bindings (alternative to udev rules)
+# Note: inject_linux.sh uses native udev rules, no Python deps needed.
+
+# ---------------------------------------------------------------------------
+# Integrations (from referenced repos)
+# ---------------------------------------------------------------------------
+# scrapling>=0.2.9           # Adaptive web scraping (D4Vinci/Scrapling)
+                             # pip install scrapling            (HTTP fetcher)
+                             # pip install 'scrapling[fetchers]' (+ stealth browser)
+                             # scrapling install                (browser binaries)
+# llmfit                     # Hardware-aware model selection (AlexsJones/llmfit)
+                             # Install: cargo install llmfit (Rust binary)
+                             # Or: download from github.com/AlexsJones/llmfit/releases
+# @anthropic/gws-cli         # Google Workspace CLI (googleworkspace/cli)
+                             # Install: npm install -g @anthropic/gws-cli
+                             # Auth: gws auth login
+
+# ---------------------------------------------------------------------------
+# Optional enhancements
+# ---------------------------------------------------------------------------
+# rich>=13.7.0               # Rich terminal output, colored logs, progress bars

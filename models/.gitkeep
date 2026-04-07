@@ -1,0 +1,2 @@
+# GGUF model files go here (not tracked in git)
+# Use: python launcher.py --download-model
