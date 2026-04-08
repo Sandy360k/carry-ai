@@ -5,19 +5,29 @@ Runs entirely from RAM, never permanently installs, and wipes all traces on ejec
 
 ## Quick Start
 
-**Windows:** Double-click `start.bat` or run:
+### New here? Run the onboarding wizard first:
+
+```bash
+python onboard.py
+```
+
+The wizard guides you through system checks, dependency install, mode selection, API key setup, voice pipeline configuration, and a dry-run validation — then prints the exact command to launch.
+
+---
+
+**Windows (after onboarding):** Double-click `start.bat` or run:
 ```bash
 python carry-ai/launcher.py
 ```
 
-**Linux:** Run from terminal:
+**Linux (after onboarding):** Run from terminal:
 ```bash
 bash start.sh
 # or
 python3 carry-ai/launcher.py
 ```
 
-**Options:**
+**Launcher options:**
 ```
 python launcher.py                  # Auto-detect everything and boot
 python launcher.py --dry-run        # Test without USB hardware
@@ -29,6 +39,8 @@ python launcher.py --no-ui          # CLI-only, no web server
 python launcher.py --download-model # Download GGUF model from HuggingFace
 python launcher.py --verbose        # Debug logging
 ```
+
+See [`docs/getting-started.md`](docs/getting-started.md) for the full manual setup guide.
 
 ## Three Modes
 
@@ -130,6 +142,34 @@ python crypto/keystore.py remove groq  # Remove a provider
 - Mounts tmpfs at `/tmp/ai_session/` (never touches host disk)
 - udev rule (3 tiers: vendor:product, kernel device, generic USB) triggers cleanup
 - Wipes tmpfs, removes udev rule, scrubs recently-used.xbel, clears clipboard
+
+## Voice Mode (Clicky-Inspired)
+
+Push-to-talk AI assistant with screen awareness and spoken responses — ported from [farzaa/clicky](https://github.com/farzaa/clicky) (Swift/macOS) to Python:
+
+```
+Hold Enter → speak → release
+  ↓ AssemblyAI transcribes audio
+  ↓ Screenshot captured (optional, for Claude vision)
+  ↓ Claude responds with text (+ optional [POINT:x,y:label] UI hints)
+  ↓ ElevenLabs speaks the response aloud
+```
+
+**Setup** (handled automatically by `python onboard.py`):
+```bash
+pip install pyaudio assemblyai elevenlabs Pillow
+```
+
+**Keys needed**: AssemblyAI (free 5h/month at assemblyai.com) + ElevenLabs (free 10k chars/month at elevenlabs.io)
+
+**Enable in config**:
+```json
+{ "voice": { "enabled": true, "assemblyai_key": "...", "elevenlabs_key": "..." } }
+```
+
+All four voice deps are optional — carry-ai runs fine without them. See [`integrations/voice_tools.py`](integrations/voice_tools.py) and [`docs/providers.md`](docs/providers.md#assemblyai-voice--via-clicky-integration).
+
+---
 
 ## Agent & Tools
 
@@ -416,6 +456,7 @@ carry-ai integrates ideas and tools from these open-source projects:
 | [Onyx](https://github.com/onyx-dot-app/onyx) | RAG provider with 50+ data connectors | `providers/onyx_provider.py` |
 | [Google Workspace CLI](https://github.com/googleworkspace/cli) | Drive, Gmail, Sheets, Calendar tools | `integrations/gworkspace_tools.py` |
 | [llmfit](https://github.com/AlexsJones/llmfit) | Hardware-aware model selection scoring | `integrations/llmfit_advisor.py` |
+| [clicky](https://github.com/farzaa/clicky) | Push-to-talk voice pipeline (Python port) | `integrations/voice_tools.py` |
 
 ## Requirements
 

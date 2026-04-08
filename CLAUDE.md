@@ -15,9 +15,16 @@ This file provides context for AI assistants working in this repository.
 ```
 carry-ai/
 ├── launcher.py              # Single entry point — boot orchestrator
+├── onboard.py               # Interactive setup wizard (run this first)
 ├── package.py               # USB packaging & distribution script
 ├── requirements.txt         # Python dependencies
 ├── README.md                # End-user documentation
+
+├── docs/
+│   ├── getting-started.md   # Step-by-step onboarding guide
+│   ├── configuration.md     # Full config/settings.json reference
+│   ├── providers.md         # API key setup for all 9 providers
+│   └── architecture.md     # System design & data-flow diagrams
 
 ├── modes/
 │   ├── api_mode.py          # Cloud API router with provider health tracking
@@ -54,7 +61,8 @@ carry-ai/
 ├── integrations/
 │   ├── scrapling_tools.py   # Adaptive web scraping (anti-bot bypass)
 │   ├── gworkspace_tools.py  # Google Workspace API (Drive, Gmail, Sheets, Calendar)
-│   └── llmfit_advisor.py    # Hardware-aware model selection
+│   ├── llmfit_advisor.py    # Hardware-aware model selection
+│   └── voice_tools.py       # Voice pipeline: push-to-talk → ASR → vision → TTS (farzaa/clicky)
 
 ├── cowork/
 │   ├── session_sharing.py   # Session export (JSON/Markdown)
@@ -297,6 +305,27 @@ When making changes, use `python launcher.py --dry-run --verbose` to validate th
 
 ---
 
+## Voice Pipeline (`integrations/voice_tools.py`)
+
+Inspired by [farzaa/clicky](https://github.com/farzaa/clicky) — a push-to-talk macOS AI assistant. The Python port provides the same pipeline:
+
+**Flow**: Push-to-talk recording → AssemblyAI transcription → screenshot (base64) → Claude vision → ElevenLabs TTS playback
+
+**Key classes**:
+- `VoiceConfig` — dataclass: keys, voice_id, vision_enabled, max_recording_seconds
+- `AudioRecorder` — PyAudio recording on a daemon thread; main thread blocks on `input()` for PTT
+- `Transcriber` — AssemblyAI REST (upload → submit → poll); falls back to placeholder string if unavailable
+- `ScreenCapture` — `PIL.ImageGrab` → `pyautogui.screenshot()` fallback, returns base64 PNG
+- `TTSPlayer` — ElevenLabs SDK → REST streaming fallback → silent no-op
+- `VoicePipeline` — chains all four; `run_loop()` for continuous PTT session
+- `is_voice_available()` — returns per-component availability dict for graceful degradation
+
+All optional deps (pyaudio, assemblyai, elevenlabs, PIL) are guarded with try/except. The pipeline silently degrades when packages or keys are absent.
+
+**Activation**: Set `voice.enabled = true` in `config/settings.json` or use the `onboard.py` Voice Setup step.
+
+---
+
 ## Key External References
 
 | Project | Used in | Purpose |
@@ -306,6 +335,18 @@ When making changes, use `python launcher.py --dry-run --verbose` to validate th
 | [G0DM0D3](https://github.com/elder-plinius/G0DM0D3) | `providers/godmode_provider.py` | Multi-model racing |
 | [Onyx](https://github.com/onyx-dot-app/onyx) | `providers/onyx_provider.py` | RAG with 50+ connectors |
 | [llmfit](https://github.com/AlexsJones/llmfit) | `integrations/llmfit_advisor.py` | Hardware-aware model selection |
+| [clicky](https://github.com/farzaa/clicky) | `integrations/voice_tools.py` | Push-to-talk voice pipeline (Python port) |
+
+---
+
+## Documentation (`docs/`)
+
+| File | Contents |
+|------|----------|
+| `docs/getting-started.md` | Zero-to-running guide: wizard, manual setup, first boot |
+| `docs/configuration.md` | Every `settings.json` key with defaults and descriptions |
+| `docs/providers.md` | API key setup for all 9 providers (7 LLM + AssemblyAI + ElevenLabs) |
+| `docs/architecture.md` | System diagram, boot sequence, ReAct loop, security model |
 
 ---
 
@@ -318,3 +359,5 @@ When making changes, use `python launcher.py --dry-run --verbose` to validate th
 5. **Optional imports** — Many integrations are optional. Always guard third-party imports with try/except; never make optional deps required without updating `requirements.txt`.
 6. **Provider additions** — New providers must extend `BaseProvider`, handle all three exception types, and be registered in `modes/api_mode.py`.
 7. **Tool additions** — Register via `register_tool()` in `agent/tools.py`; keep `execute_fn` side-effect-safe when `permission_mode == "safe"`.
+8. **Voice pipeline** — `integrations/voice_tools.py` is fully optional; all four deps (pyaudio, assemblyai, elevenlabs, Pillow) are guarded. Never make them required.
+9. **Onboarding** — `onboard.py` uses `rich` for the visual experience but has a complete plain-text fallback; it must run with only stdlib if rich is not yet installed.

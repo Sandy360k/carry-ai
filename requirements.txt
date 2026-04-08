@@ -73,6 +73,22 @@ pyperclip>=1.8.2             # Clipboard read/write/wipe
                              # Auth: gws auth login
 
 # ---------------------------------------------------------------------------
-# Optional enhancements
+# Voice Mode (inspired by farzaa/clicky — push-to-talk + TTS)
 # ---------------------------------------------------------------------------
-# rich>=13.7.0               # Rich terminal output, colored logs, progress bars
+# pyaudio>=0.2.14            # Microphone recording + TTS audio playback
+#                            # Linux: sudo apt install portaudio19-dev first
+#                            # macOS: brew install portaudio first
+# assemblyai>=0.24.0         # Speech-to-text transcription (AssemblyAI REST API)
+#                            # pip install assemblyai
+#                            # Key: assemblyai.com → free 5h/month
+# elevenlabs>=1.2.0          # Text-to-speech synthesis (ElevenLabs streaming API)
+#                            # pip install elevenlabs
+#                            # Key: elevenlabs.io → free 10k chars/month
+# Pillow>=10.0.0             # Screenshot capture fallback (PIL.ImageGrab)
+#                            # pip install Pillow
+
+# ---------------------------------------------------------------------------
+# Onboarding & optional enhancements
+# ---------------------------------------------------------------------------
+rich>=13.7.0                 # Rich terminal output for onboard.py (colored panels,
+                             # tables, progress bars). Also improves general CLI UX.
