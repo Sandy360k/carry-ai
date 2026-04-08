@@ -860,7 +860,9 @@ def main() -> None:
 
     body += (
         "To download more models later:\n"
-        "  python flash_usb.py --add-models --target " + str(usb_root) + "\n"
+        "  python flash_usb.py --add-models --target " + str(usb_root) + "\n\n"
+        "To update carry-ai (source code + packages only, models untouched):\n"
+        "  python update_usb.py --target " + str(usb_root) + "\n"
     )
 
     _panel("Your USB is ready!" if all_ok else "Flash complete (with warnings)", body, style=status)
@@ -1006,6 +1008,18 @@ if __name__ == "__main__":
                 add_models_wizard(target)
             else:
                 print("Usage: python flash_usb.py --add-models --target H:\\")
+        elif "--update" in sys.argv:
+            # Delegate to update_usb.py
+            update_script = PROJECT_ROOT / "update_usb.py"
+            if update_script.exists():
+                # Pass through remaining args, replacing --update with nothing
+                remaining = [a for a in sys.argv[1:] if a != "--update"]
+                result = subprocess.run(
+                    [sys.executable, str(update_script)] + remaining
+                )
+                sys.exit(result.returncode)
+            else:
+                print("update_usb.py not found.  Run: python update_usb.py")
         else:
             main()
     except KeyboardInterrupt:
