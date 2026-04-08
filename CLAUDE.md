@@ -16,6 +16,11 @@ This file provides context for AI assistants working in this repository.
 carry-ai/
 ├── launcher.py              # Single entry point — boot orchestrator
 ├── onboard.py               # Interactive setup wizard (run this first)
+├── flash_usb.py             # Rufus-style USB flasher — run on host, writes everything to USB
+├── setup_usb.py             # USB package env builder — run from USB after copy
+├── bootstrap.py             # sys.path injector — called by start scripts, prepends USB packages
+├── start.bat                # Windows launcher — uses python-env\windows\python.exe if present
+├── start.sh                 # Linux launcher — sets PYTHONPATH to python-env/linux/site-packages
 ├── package.py               # USB packaging & distribution script
 ├── requirements.txt         # Python dependencies
 ├── README.md                # End-user documentation
@@ -350,6 +355,34 @@ All optional deps (pyaudio, assemblyai, elevenlabs, PIL) are guarded with try/ex
 
 ---
 
+## USB Self-Hosting Architecture
+
+The USB drive carries its own Python runtime. No installation on the host machine is required (Windows) or minimal (Linux, needs Python 3.10+).
+
+**Directory layout on USB:**
+```
+USB_ROOT/
+├── carry-ai/              ← this repo
+├── python-env/
+│   ├── windows/           ← embeddable Python + site-packages
+│   └── linux/
+│       └── site-packages/ ← packages, injected via PYTHONPATH
+├── models/                ← GGUF files
+├── start.bat / start.sh   ← entry points
+```
+
+**Boot path on Windows:**
+`start.bat` → `python-env\windows\python.exe bootstrap.py` → injects USB site-packages → `launcher.main()`
+
+**Boot path on Linux:**
+`start.sh` sets `PYTHONPATH=python-env/linux/site-packages` → `python3 bootstrap.py` → `launcher.main()`
+
+**flash_usb.py** is the host-side "Rufus" equivalent: detects USB drives, copies carry-ai, downloads packages and GGUF models onto the USB, writes start scripts. Run it once on any machine with Python installed to prepare a USB.
+
+**setup_usb.py** is the USB-side alternative: run it from within the USB after manually copying carry-ai. Offers the same package/model download flow.
+
+---
+
 ## Important Notes for AI Assistants
 
 1. **No build step** — Python only; changes take effect immediately.
@@ -361,3 +394,5 @@ All optional deps (pyaudio, assemblyai, elevenlabs, PIL) are guarded with try/ex
 7. **Tool additions** — Register via `register_tool()` in `agent/tools.py`; keep `execute_fn` side-effect-safe when `permission_mode == "safe"`.
 8. **Voice pipeline** — `integrations/voice_tools.py` is fully optional; all four deps (pyaudio, assemblyai, elevenlabs, Pillow) are guarded. Never make them required.
 9. **Onboarding** — `onboard.py` uses `rich` for the visual experience but has a complete plain-text fallback; it must run with only stdlib if rich is not yet installed.
+10. **USB self-hosting** — `flash_usb.py` and `setup_usb.py` install packages with `pip install --target` into the USB. `bootstrap.py` injects that directory via `sys.path.insert(0, ...)`. Never assume host site-packages are available; all imports that aren't stdlib should be guarded with try/except.
+11. **Portable Python URL** — Windows embeddable Python is downloaded from `https://www.python.org/ftp/python/{VERSION}/python-{VERSION}-embed-amd64.zip`. The version string in the URL uses dots (e.g. `3.11.9`), not digits concatenated.
