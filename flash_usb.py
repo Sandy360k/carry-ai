@@ -710,17 +710,43 @@ def main() -> None:
     needs_token = any(m.get("gated") for m in chosen_models)
     if needs_token and not hf_token:
         print()
+        # Build owner-specific license instructions
+        owners = set()
+        for m in chosen_models:
+            if m.get("gated"):
+                repo = m["hf_repo"]
+                # e.g. "bartowski/gemma-3-1b-it-GGUF" → base model is google/gemma-3-1b-it
+                if "gemma" in repo.lower():
+                    owners.add("google")
+                elif "llama" in repo.lower():
+                    owners.add("meta-llama")
+
+        license_lines = ""
+        if "google" in owners:
+            license_lines += (
+                "\n  [bold]Google Gemma[/bold] license:\n"
+                "    → https://huggingface.co/google/gemma-3-1b-it\n"
+                "    Click 'Agree and access repository' (requires Google account)\n"
+            )
+        if "meta-llama" in owners:
+            license_lines += (
+                "\n  [bold]Meta Llama[/bold] license:\n"
+                "    → https://huggingface.co/meta-llama/Llama-3.3-70B-Instruct\n"
+                "    Click 'Agree and access repository' (requires Meta approval)\n"
+            )
+
         _panel(
             "HuggingFace Token Required",
-            "One or more selected models are gated (Gemma, Llama).\n"
+            "One or more selected models are gated.\n"
             "To download them you need a free HuggingFace token.\n\n"
-            "Steps:\n"
-            "  1. Create a free account at https://huggingface.co/join\n"
+            "Step 1 — Create a token:\n"
+            "  1. Sign up at https://huggingface.co/join (free)\n"
             "  2. Go to https://huggingface.co/settings/tokens\n"
-            "  3. Create a token with 'Read' access\n"
-            "  4. Visit the model page and accept the license agreement\n"
-            "     (e.g. https://huggingface.co/google/gemma-3-1b-it)\n"
-            "  5. Paste your token below",
+            "  3. Create a token with 'Read' access\n\n"
+            "Step 2 — Accept the model license:"
+            + license_lines +
+            "\n"
+            "Step 3 — Paste your token below:",
             style="yellow",
         )
         try:
@@ -832,12 +858,156 @@ def main() -> None:
         )
     body += "Run  python carry-ai/onboard.py  on the target machine for first-time setup."
 
+    body += (
+        "To download more models later:\n"
+        "  python flash_usb.py --add-models --target " + str(usb_root) + "\n"
+    )
+
     _panel("Your USB is ready!" if all_ok else "Flash complete (with warnings)", body, style=status)
 
 
+# ---------------------------------------------------------------------------
+# Add-models mode — download extra models onto an existing USB
+# ---------------------------------------------------------------------------
+
+def add_models_wizard(target_path: str) -> None:
+    """Interactive wizard to download GGUF models onto an existing USB."""
+    usb_root = Path(target_path).resolve()
+    models_dir = usb_root / "models"
+
+    _panel(
+        "carry-ai — Download Models",
+        f"Target: {usb_root}\n"
+        f"Models directory: {models_dir}\n",
+        style="cyan",
+    )
+
+    # Show existing models
+    existing = list(models_dir.glob("*.gguf")) if models_dir.is_dir() else []
+    if existing:
+        console.print("  [bold]Already downloaded:[/bold]")
+        for f in existing:
+            size_gb = f.stat().st_size / (1024**3)
+            console.print(f"    ✓ {f.name}  ({size_gb:.1f} GB)")
+        print()
+
+    # Show catalogue
+    ram = detect_host_ram()
+    recommended = next((m for m in reversed(GGUF_MODELS) if m["ram_gb"] <= ram), GGUF_MODELS[0])
+
+    console.print(f"  Host RAM: [bold]{ram:.1f} GB[/bold]")
+    console.print(f"  Recommended: [bold]{recommended['name']}[/bold]\n")
+    console.print("  [bold]Available models:[/bold]")
+    console.print("  [dim](Models marked [needs HF token] require a free HuggingFace token)[/dim]\n")
+
+    for i, m in enumerate(GGUF_MODELS, 1):
+        tag = " [green]← recommended[/green]" if m["name"] == recommended["name"] else ""
+        gated_tag = " [yellow]🔑[/yellow]" if m.get("gated") else ""
+        # Mark if already downloaded
+        dest = models_dir / m["hf_file"]
+        dl_tag = " [dim](already downloaded)[/dim]" if dest.exists() else ""
+        console.print(f"  [{i}] {m['name']}  ~{m['size_gb']:.1f} GB  |  {m['ram_gb']} GB RAM  —  {m['description']}{tag}{gated_tag}{dl_tag}")
+
+    print()
+    try:
+        model_input = input(
+            "  Download models? (comma-separated numbers, Enter to quit, r for recommended): "
+        ).strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        print()
+        return
+
+    chosen: list[dict] = []
+    if model_input == "r":
+        chosen = [recommended]
+    elif model_input:
+        for part in model_input.split(","):
+            try:
+                mi = int(part.strip()) - 1
+                if 0 <= mi < len(GGUF_MODELS):
+                    chosen.append(GGUF_MODELS[mi])
+            except ValueError:
+                pass
+
+    if not chosen:
+        console.print("  No models selected.")
+        return
+
+    # HF token for gated models
+    hf_token = os.environ.get("HF_TOKEN", "")
+    needs_token = any(m.get("gated") for m in chosen)
+    if needs_token and not hf_token:
+        owners = set()
+        for m in chosen:
+            if m.get("gated"):
+                if "gemma" in m["hf_repo"].lower():
+                    owners.add("google")
+                elif "llama" in m["hf_repo"].lower():
+                    owners.add("meta-llama")
+
+        license_lines = ""
+        if "google" in owners:
+            license_lines += (
+                "\n  Google Gemma: https://huggingface.co/google/gemma-3-1b-it"
+                "\n    → click 'Agree and access repository'\n"
+            )
+        if "meta-llama" in owners:
+            license_lines += (
+                "\n  Meta Llama: https://huggingface.co/meta-llama/Llama-3.3-70B-Instruct"
+                "\n    → click 'Agree and access repository'\n"
+            )
+
+        console.print(
+            "\n  [yellow]Gated model selected.[/yellow] You need a HuggingFace token.\n"
+            "  Get one at: https://huggingface.co/settings/tokens\n"
+            "  Accept the license:" + license_lines
+        )
+        try:
+            hf_token = input("  HuggingFace token (hf_...): ").strip()
+        except (EOFError, KeyboardInterrupt):
+            hf_token = ""
+        if not hf_token:
+            console.print("  [yellow]No token. Skipping gated models.[/yellow]")
+            chosen = [m for m in chosen if not m.get("gated")]
+
+    # Download
+    print()
+    for m in chosen:
+        download_gguf_model(m, models_dir, hf_token=hf_token)
+
+    # Summary
+    all_models = list(models_dir.glob("*.gguf"))
+    total_gb = sum(f.stat().st_size for f in all_models) / (1024**3)
+    console.print(f"\n  [green]Done.[/green] {len(all_models)} model(s) on USB, {total_gb:.1f} GB total.")
+
+
+# ---------------------------------------------------------------------------
+# Entry point
+# ---------------------------------------------------------------------------
+
 if __name__ == "__main__":
     try:
-        main()
+        # --add-models mode
+        if "--add-models" in sys.argv:
+            target = None
+            if "--target" in sys.argv:
+                idx = sys.argv.index("--target")
+                if idx + 1 < len(sys.argv):
+                    target = sys.argv[idx + 1]
+            if not target:
+                # Try to detect from current dir or parent
+                if (Path(".") / "carry-ai").is_dir():
+                    target = str(Path(".").resolve())
+                elif (Path(".").parent / "carry-ai").is_dir():
+                    target = str(Path(".").parent.resolve())
+                else:
+                    target = input("  USB path (e.g. H:\\): ").strip()
+            if target:
+                add_models_wizard(target)
+            else:
+                print("Usage: python flash_usb.py --add-models --target H:\\")
+        else:
+            main()
     except KeyboardInterrupt:
         print("\n\nAborted.")
         sys.exit(0)
