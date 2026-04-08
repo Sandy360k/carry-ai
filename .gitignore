@@ -1,0 +1,21 @@
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.DS_Store
+Thumbs.db
+
+# USB runtime (never in repo)
+python-env/
+models/
+
+# User secrets & local config
+config/providers.enc
+config/settings.json
+config/memory.db
+
+# Update manifest (USB-resident)
+.carry_ai_manifest.json
+
+# Dry-run session artifacts
+_dry_run_session/
