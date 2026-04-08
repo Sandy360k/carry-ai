@@ -77,48 +77,51 @@ GET_PIP_URL = "https://bootstrap.pypa.io/get-pip.py"
 # ---------------------------------------------------------------------------
 # GGUF model catalogue
 # ---------------------------------------------------------------------------
+# NOTE: Only non-gated models here. Gemma/Llama models on HuggingFace are
+# gated (require accepting a license + auth token). Use Qwen/Phi which are
+# freely downloadable without authentication.
 GGUF_MODELS = [
     {
-        "name": "Gemma 3 1B Q4_K_M",
-        "ram_gb": 2, "size_gb": 0.8,
-        "description": "Emergency fallback — fits any machine",
-        "hf_repo": "bartowski/gemma-3-1b-it-GGUF",
-        "hf_file": "gemma-3-1b-it-Q4_K_M.gguf",
+        "name": "Qwen2.5 1.5B Q4_K_M",
+        "ram_gb": 2, "size_gb": 1.1,
+        "description": "Tiny fallback — fits any machine",
+        "hf_repo": "Qwen/Qwen2.5-1.5B-Instruct-GGUF",
+        "hf_file": "qwen2.5-1.5b-instruct-q4_k_m.gguf",
+    },
+    {
+        "name": "Qwen2.5 3B Q4_K_M",
+        "ram_gb": 4, "size_gb": 2.0,
+        "description": "Good quality, 4 GB RAM",
+        "hf_repo": "Qwen/Qwen2.5-3B-Instruct-GGUF",
+        "hf_file": "qwen2.5-3b-instruct-q4_k_m.gguf",
     },
     {
         "name": "Phi-4-mini Q4_K_M",
-        "ram_gb": 4, "size_gb": 2.4,
-        "description": "Good quality, 4 GB RAM, tool calling",
+        "ram_gb": 5, "size_gb": 2.4,
+        "description": "Strong reasoning + tool calling, 5 GB RAM",
         "hf_repo": "bartowski/Phi-4-mini-instruct-GGUF",
         "hf_file": "Phi-4-mini-instruct-Q4_K_M.gguf",
     },
     {
-        "name": "Qwen3 4B Q4_K_M",
-        "ram_gb": 5, "size_gb": 2.8,
-        "description": "Strong reasoning + tool calling, 5 GB RAM",
-        "hf_repo": "bartowski/Qwen3-4B-GGUF",
-        "hf_file": "Qwen3-4B-Q4_K_M.gguf",
+        "name": "Qwen2.5 7B Q4_K_M",
+        "ram_gb": 6, "size_gb": 4.7,
+        "description": "Strong all-around model, 6 GB RAM",
+        "hf_repo": "Qwen/Qwen2.5-7B-Instruct-GGUF",
+        "hf_file": "qwen2.5-7b-instruct-q4_k_m.gguf",
     },
     {
-        "name": "Gemma 4 E4B Q4_K_M",
-        "ram_gb": 6, "size_gb": 3.1,
-        "description": "Multimodal vision, 6 GB RAM",
-        "hf_repo": "bartowski/gemma-4-e4b-GGUF",
-        "hf_file": "gemma-4-e4b-Q4_K_M.gguf",
+        "name": "Qwen2.5 7B Q8_0",
+        "ram_gb": 10, "size_gb": 8.1,
+        "description": "High quality 7B, 10 GB RAM",
+        "hf_repo": "Qwen/Qwen2.5-7B-Instruct-GGUF",
+        "hf_file": "qwen2.5-7b-instruct-q8_0.gguf",
     },
     {
-        "name": "Qwen3 8B Q4_K_M",
-        "ram_gb": 8, "size_gb": 5.2,
-        "description": "Best quality under 8 GB, tool calling",
-        "hf_repo": "bartowski/Qwen3-8B-GGUF",
-        "hf_file": "Qwen3-8B-Q4_K_M.gguf",
-    },
-    {
-        "name": "Qwen3 14B Q4_K_M",
+        "name": "Qwen2.5 14B Q4_K_M",
         "ram_gb": 12, "size_gb": 9.0,
-        "description": "High quality, 12 GB RAM, tool calling",
-        "hf_repo": "bartowski/Qwen3-14B-GGUF",
-        "hf_file": "Qwen3-14B-Q4_K_M.gguf",
+        "description": "Best quality, 12 GB RAM, tool calling",
+        "hf_repo": "Qwen/Qwen2.5-14B-Instruct-GGUF",
+        "hf_file": "qwen2.5-14b-instruct-q4_k_m.gguf",
     },
 ]
 
@@ -363,13 +366,17 @@ def _dir_mb(path: Path) -> float:
 # Downloads
 # ---------------------------------------------------------------------------
 
-def download_file_with_progress(url: str, dest: Path, label: str = "") -> bool:
+def download_file_with_progress(url: str, dest: Path, label: str = "",
+                                hf_token: str = "") -> bool:
     """Download url → dest with a simple inline progress bar."""
     dest.parent.mkdir(parents=True, exist_ok=True)
     label = label or dest.name
     try:
-        req = Request(url, headers={"User-Agent": "carry-ai/flash_usb"})
-        with urlopen(req, timeout=300) as resp:
+        headers = {"User-Agent": "carry-ai/flash_usb"}
+        if hf_token:
+            headers["Authorization"] = f"Bearer {hf_token}"
+        req = Request(url, headers=headers)
+        with urlopen(req, timeout=600) as resp:
             total = int(resp.headers.get("Content-Length", 0))
             written = 0
             with open(dest, "wb") as f:
@@ -394,16 +401,25 @@ def download_file_with_progress(url: str, dest: Path, label: str = "") -> bool:
         return False
 
 
-def download_gguf_model(model: dict, models_dir: Path) -> bool:
+def download_gguf_model(model: dict, models_dir: Path, hf_token: str = "") -> bool:
     """Download a GGUF model from HuggingFace onto the USB."""
     models_dir.mkdir(parents=True, exist_ok=True)
     dest = models_dir / model["hf_file"]
     if dest.exists():
-        console.print(f"  [green]✓[/green] Already present: {dest.name}")
+        size_gb = dest.stat().st_size / (1024**3)
+        console.print(f"  [green]✓[/green] Already present: {dest.name} ({size_gb:.1f} GB)")
         return True
     url = f"https://huggingface.co/{model['hf_repo']}/resolve/main/{model['hf_file']}"
     console.print(f"  Downloading {model['name']} (~{model['size_gb']:.1f} GB) ...")
-    return download_file_with_progress(url, dest, model["hf_file"])
+    console.print(f"    URL: {url}")
+    ok = download_file_with_progress(url, dest, model["hf_file"], hf_token=hf_token)
+    if not ok:
+        console.print(
+            f"  [yellow]Tip:[/yellow] If this is a gated model (Gemma, Llama), you need a\n"
+            f"  HuggingFace token. Get one at https://huggingface.co/settings/tokens\n"
+            f"  Then set: HF_TOKEN=hf_xxx python flash_usb.py"
+        )
+    return ok
 
 
 # ---------------------------------------------------------------------------
@@ -724,9 +740,10 @@ def main() -> None:
     # 3e — GGUF models
     if chosen_models:
         console.print(f"\n[bold]3e.[/bold] Downloading {len(chosen_models)} GGUF model(s) ...")
+        hf_token = os.environ.get("HF_TOKEN", "")
         models_dir = usb_root / "models"
         for m in chosen_models:
-            ok = download_gguf_model(m, models_dir)
+            ok = download_gguf_model(m, models_dir, hf_token=hf_token)
             if not ok:
                 console.print(f"  [yellow]⚠ Failed to download {m['name']}[/yellow]")
 

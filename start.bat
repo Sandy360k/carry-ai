@@ -2,15 +2,9 @@
 :: ============================================================
 :: carry-ai — Windows Launcher
 :: ============================================================
-:: Launches the desktop chat app. Falls back to the web UI.
-::
-:: Priority for Python:
-::   1. USB-local portable Python  (python-env\windows\python.exe)
-::   2. System Python              (python / python3)
-::
-:: Priority for UI:
-::   1. Desktop app  (ui\desktop.py)  — native window
-::   2. Web UI       (launcher.py)    — browser at localhost:8080
+:: Tries the desktop chat app first. If tkinter is missing
+:: (common with portable Python), falls back to the web UI
+:: which auto-opens in your browser.
 :: ============================================================
 SETLOCAL EnableDelayedExpansion
 
@@ -19,8 +13,9 @@ SET "USB_ROOT=%USB_ROOT:~0,-1%"
 SET "USB_PYTHON=%USB_ROOT%\python-env\windows\python.exe"
 SET "DESKTOP=%USB_ROOT%\carry-ai\ui\desktop.py"
 SET "BOOTSTRAP=%USB_ROOT%\carry-ai\bootstrap.py"
+SET "LAUNCHER=%USB_ROOT%\carry-ai\launcher.py"
 
-:: ---- Resolve Python interpreter ---
+:: ---- Resolve Python interpreter ----
 SET "PY="
 IF EXIST "%USB_PYTHON%" (
     SET "PY=%USB_PYTHON%"
@@ -38,19 +33,30 @@ IF EXIST "%USB_PYTHON%" (
 IF "%PY%"=="" (
     ECHO.
     ECHO  [carry-ai] ERROR: Python not found.
-    ECHO  Run setup_usb.py from another machine to bundle Python on this USB,
-    ECHO  or install Python 3.10+ from https://python.org
+    ECHO  Run setup_usb.py to bundle Python, or install from https://python.org
     ECHO.
     PAUSE
     GOTO :EOF
 )
 
-:: ---- Launch desktop app (or fall back to web UI) ---
+:: ---- Try desktop app first ----
 IF EXIST "%DESKTOP%" (
-    ECHO [carry-ai] Starting desktop app...
-    "%PY%" "%DESKTOP%" %*
-) ELSE (
-    ECHO [carry-ai] Desktop app not found, starting web UI...
+    ECHO [carry-ai] Trying desktop app...
+    "%PY%" "%DESKTOP%" 2>nul
+    IF !ERRORLEVEL! EQU 0 GOTO :EOF
+    ECHO [carry-ai] Desktop app failed (tkinter not available in portable Python).
+    ECHO [carry-ai] Launching web UI instead — your browser will open automatically.
+    ECHO.
+)
+
+:: ---- Fall back to web UI (auto-opens browser) ----
+IF EXIST "%BOOTSTRAP%" (
     "%PY%" "%BOOTSTRAP%" %*
+) ELSE IF EXIST "%LAUNCHER%" (
+    "%PY%" "%LAUNCHER%" %*
+) ELSE (
+    ECHO [carry-ai] ERROR: Cannot find launcher.py
+    ECHO  Expected at: %LAUNCHER%
+    PAUSE
 )
 ENDLOCAL
