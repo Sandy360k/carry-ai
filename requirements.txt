@@ -92,3 +92,9 @@ pyperclip>=1.8.2             # Clipboard read/write/wipe
 # ---------------------------------------------------------------------------
 rich>=13.7.0                 # Rich terminal output for onboard.py (colored panels,
                              # tables, progress bars). Also improves general CLI UX.
+
+# ---------------------------------------------------------------------------
+# Desktop App (native GUI)
+# ---------------------------------------------------------------------------
+customtkinter>=5.2.0         # Modern-looking tkinter wrapper for ui/desktop.py
+                             # (falls back to plain tkinter if not installed)
