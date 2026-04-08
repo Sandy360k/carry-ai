@@ -392,7 +392,16 @@ def boot(args: argparse.Namespace) -> None:
     ui_thread = None
     if not args.no_ui:
         ui_thread = _start_ui(boot_context)
-        print(f"  Web UI: http://localhost:{args.port}")
+        url = f"http://localhost:{args.port}"
+        print(f"  Web UI: {url}")
+
+        # Auto-open browser after a short delay (give Flask time to bind)
+        import webbrowser
+        def _open_browser():
+            import time as _time
+            _time.sleep(1.5)
+            webbrowser.open(url)
+        threading.Thread(target=_open_browser, daemon=True).start()
 
     print("\n  carry-ai is running. Press Ctrl+C to stop.\n")
 

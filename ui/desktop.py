@@ -94,6 +94,38 @@ PROVIDERS = [
 FONT_FAMILY = "Segoe UI" if platform.system() == "Windows" else "Helvetica"
 MONO_FAMILY = "Consolas" if platform.system() == "Windows" else "DejaVu Sans Mono"
 
+# GGUF model catalogue (mirrored from flash_usb.py)
+GGUF_MODELS = [
+    {"name": "Qwen2.5 1.5B Q4_K_M", "ram_gb": 2, "size_gb": 1.1,
+     "desc": "Tiny fallback — fits any machine",
+     "hf_repo": "Qwen/Qwen2.5-1.5B-Instruct-GGUF",
+     "hf_file": "qwen2.5-1.5b-instruct-q4_k_m.gguf", "gated": False},
+    {"name": "Gemma 3 1B Q4_K_M", "ram_gb": 2, "size_gb": 0.8,
+     "desc": "Google Gemma, tiny [needs HF token]",
+     "hf_repo": "bartowski/gemma-3-1b-it-GGUF",
+     "hf_file": "gemma-3-1b-it-Q4_K_M.gguf", "gated": True},
+    {"name": "Qwen2.5 3B Q4_K_M", "ram_gb": 4, "size_gb": 2.0,
+     "desc": "Good quality, 4 GB RAM",
+     "hf_repo": "Qwen/Qwen2.5-3B-Instruct-GGUF",
+     "hf_file": "qwen2.5-3b-instruct-q4_k_m.gguf", "gated": False},
+    {"name": "Phi-4-mini Q4_K_M", "ram_gb": 5, "size_gb": 2.4,
+     "desc": "Strong reasoning + tool calling",
+     "hf_repo": "bartowski/Phi-4-mini-instruct-GGUF",
+     "hf_file": "Phi-4-mini-instruct-Q4_K_M.gguf", "gated": False},
+    {"name": "Gemma 4 E4B Q4_K_M", "ram_gb": 6, "size_gb": 3.1,
+     "desc": "Multimodal vision [needs HF token]",
+     "hf_repo": "bartowski/gemma-4-e4b-GGUF",
+     "hf_file": "gemma-4-e4b-Q4_K_M.gguf", "gated": True},
+    {"name": "Qwen2.5 7B Q4_K_M", "ram_gb": 6, "size_gb": 4.7,
+     "desc": "Strong all-around, 6 GB RAM",
+     "hf_repo": "Qwen/Qwen2.5-7B-Instruct-GGUF",
+     "hf_file": "qwen2.5-7b-instruct-q4_k_m.gguf", "gated": False},
+    {"name": "Qwen2.5 14B Q4_K_M", "ram_gb": 12, "size_gb": 9.0,
+     "desc": "Best quality, 12 GB RAM",
+     "hf_repo": "Qwen/Qwen2.5-14B-Instruct-GGUF",
+     "hf_file": "qwen2.5-14b-instruct-q4_k_m.gguf", "gated": False},
+]
+
 # ---------------------------------------------------------------------------
 # Data structures
 # ---------------------------------------------------------------------------
@@ -400,6 +432,7 @@ class CarryAIApp:
         bf = tk.Frame(sb, bg=self.C["bg2"])
         bf.pack(side="bottom", fill="x", padx=10, pady=10)
         btns = [
+            ("Models", self._open_model_manager, self.C["accent2"]),
             ("Export Chat", self._export_chat, self.C["border"]),
             ("Web UI", self._open_web_ui, self.C["border"]),
         ]
@@ -926,8 +959,265 @@ class CarryAIApp:
             "Shortcuts:  Ctrl+N new chat  |  Ctrl+L clear  |  Ctrl+E export  |  Esc stop/clear\n"
         )
 
+    # ==================================================================
+    # Model Manager
+    # ==================================================================
+    def _open_model_manager(self):
+        ModelManagerWindow(self._root, self.C)
+
     def run(self):
         self._root.mainloop()
+
+
+# ---------------------------------------------------------------------------
+# Model Manager — download / delete GGUF models from the GUI
+# ---------------------------------------------------------------------------
+class ModelManagerWindow:
+    """Toplevel window for browsing, downloading, and deleting GGUF models."""
+
+    def __init__(self, parent, colors: dict):
+        self.C = colors
+        self._models_dir = PROJECT_ROOT / "models"
+        self._models_dir.mkdir(exist_ok=True)
+        self._hf_token = ""
+        self._download_thread: threading.Thread | None = None
+        self._cancel = threading.Event()
+
+        self._win = tk.Toplevel(parent)
+        self._win.title("carry-ai — Model Manager")
+        self._win.geometry("750x600")
+        self._win.configure(bg=self.C["bg"])
+        self._win.transient(parent)
+        self._win.grab_set()
+
+        self._build_ui()
+        self._refresh_list()
+
+    def _build_ui(self):
+        # Header
+        hdr = tk.Frame(self._win, bg=self.C["bg2"], height=50)
+        hdr.pack(fill="x")
+        hdr.pack_propagate(False)
+        tk.Label(hdr, text="Model Manager", font=(FONT_FAMILY, 15, "bold"),
+                 fg=self.C["fg"], bg=self.C["bg2"]).pack(side="left", padx=16)
+
+        # RAM info
+        ram_text = ""
+        try:
+            import psutil
+            ram_text = f"RAM: {psutil.virtual_memory().available / (1024**3):.1f} GB free"
+        except ImportError:
+            pass
+        if ram_text:
+            tk.Label(hdr, text=ram_text, font=(FONT_FAMILY, 10),
+                     fg=self.C["fg2"], bg=self.C["bg2"]).pack(side="right", padx=16)
+
+        # HF Token entry (for gated models)
+        token_frame = tk.Frame(self._win, bg=self.C["bg3"])
+        token_frame.pack(fill="x", padx=0, pady=0)
+        tk.Label(token_frame, text="HF Token (for Gemma/Llama):",
+                 font=(FONT_FAMILY, 10), fg=self.C["fg2"],
+                 bg=self.C["bg3"]).pack(side="left", padx=(16, 6), pady=6)
+        self._token_entry = tk.Entry(token_frame, width=40, show="*",
+                                      bg=self.C["input_bg"], fg=self.C["fg"],
+                                      insertbackground=self.C["fg"],
+                                      font=(FONT_FAMILY, 10), relief="flat")
+        self._token_entry.pack(side="left", padx=4, pady=6)
+        self._token_entry.insert(0, os.environ.get("HF_TOKEN", ""))
+        tk.Label(token_frame, text="Get one at huggingface.co/settings/tokens",
+                 font=(FONT_FAMILY, 9), fg=self.C["fg3"],
+                 bg=self.C["bg3"]).pack(side="left", padx=8, pady=6)
+
+        # Scrollable model list
+        self._list_frame = tk.Frame(self._win, bg=self.C["bg"])
+        self._list_frame.pack(fill="both", expand=True, padx=0, pady=0)
+
+        self._canvas = tk.Canvas(self._list_frame, bg=self.C["bg"],
+                                  highlightthickness=0, bd=0)
+        scrollbar = tk.Scrollbar(self._list_frame, command=self._canvas.yview,
+                                  bg=self.C["bg"], troughcolor=self.C["bg3"])
+        self._inner = tk.Frame(self._canvas, bg=self.C["bg"])
+        self._inner.bind("<Configure>",
+                         lambda e: self._canvas.configure(scrollregion=self._canvas.bbox("all")))
+        self._canvas.create_window((0, 0), window=self._inner, anchor="nw")
+        self._canvas.configure(yscrollcommand=scrollbar.set)
+        scrollbar.pack(side="right", fill="y")
+        self._canvas.pack(side="left", fill="both", expand=True)
+
+        # Progress bar area at bottom
+        self._progress_frame = tk.Frame(self._win, bg=self.C["bg3"], height=50)
+        self._progress_frame.pack(fill="x")
+        self._progress_frame.pack_propagate(False)
+        self._progress_lbl = tk.Label(self._progress_frame, text="",
+                                       font=(FONT_FAMILY, 10), fg=self.C["fg2"],
+                                       bg=self.C["bg3"])
+        self._progress_lbl.pack(side="left", padx=16, pady=8)
+        self._progress_bar_var = tk.DoubleVar(value=0)
+        from tkinter import ttk
+        style = ttk.Style()
+        style.configure("carry.Horizontal.TProgressbar",
+                        background=self.C["accent"], troughcolor=self.C["bg"])
+        self._progress_bar = ttk.Progressbar(
+            self._progress_frame, variable=self._progress_bar_var,
+            maximum=100, style="carry.Horizontal.TProgressbar")
+        self._progress_bar.pack(side="left", fill="x", expand=True, padx=(0, 16), pady=12)
+
+    def _refresh_list(self):
+        """Rebuild the model list UI."""
+        for w in self._inner.winfo_children():
+            w.destroy()
+
+        # Scan existing models
+        existing = {}
+        if self._models_dir.is_dir():
+            for f in self._models_dir.glob("*.gguf"):
+                existing[f.name] = f.stat().st_size / (1024**3)
+
+        # Section: Downloaded models
+        if existing:
+            tk.Label(self._inner, text="Downloaded Models",
+                     font=(FONT_FAMILY, 13, "bold"), fg=self.C["accent"],
+                     bg=self.C["bg"]).pack(anchor="w", padx=16, pady=(12, 4))
+            for fname, size in sorted(existing.items()):
+                row = tk.Frame(self._inner, bg=self.C["bg2"])
+                row.pack(fill="x", padx=16, pady=2)
+                tk.Label(row, text=f"  {fname}", font=(FONT_FAMILY, 11),
+                         fg=self.C["fg"], bg=self.C["bg2"],
+                         anchor="w").pack(side="left", fill="x", expand=True, pady=6)
+                tk.Label(row, text=f"{size:.1f} GB", font=(FONT_FAMILY, 10),
+                         fg=self.C["fg2"], bg=self.C["bg2"]).pack(side="left", padx=8)
+                del_btn = tk.Button(row, text="Delete", font=(FONT_FAMILY, 9),
+                                    bg=self.C["error"], fg="#fff", relief="flat",
+                                    command=lambda f=fname: self._delete_model(f))
+                del_btn.pack(side="right", padx=8, pady=4)
+
+        # Section: Available for download
+        tk.Label(self._inner, text="Available Models",
+                 font=(FONT_FAMILY, 13, "bold"), fg=self.C["accent"],
+                 bg=self.C["bg"]).pack(anchor="w", padx=16, pady=(16, 4))
+
+        for m in GGUF_MODELS:
+            is_downloaded = m["hf_file"] in existing
+            row = tk.Frame(self._inner, bg=self.C["ai_bg"])
+            row.pack(fill="x", padx=16, pady=2)
+
+            # Model info
+            info = tk.Frame(row, bg=self.C["ai_bg"])
+            info.pack(side="left", fill="x", expand=True, pady=6, padx=8)
+
+            name_text = m["name"]
+            if m.get("gated"):
+                name_text += "  🔑"
+            tk.Label(info, text=name_text, font=(FONT_FAMILY, 11, "bold"),
+                     fg=self.C["fg"], bg=self.C["ai_bg"],
+                     anchor="w").pack(anchor="w")
+            tk.Label(info, text=f"{m['desc']}  |  ~{m['size_gb']:.1f} GB  |  {m['ram_gb']} GB+ RAM",
+                     font=(FONT_FAMILY, 9), fg=self.C["fg2"],
+                     bg=self.C["ai_bg"], anchor="w").pack(anchor="w")
+
+            # Action button
+            if is_downloaded:
+                tk.Label(row, text="✓ Downloaded", font=(FONT_FAMILY, 10),
+                         fg=self.C["accent"], bg=self.C["ai_bg"]).pack(side="right", padx=12, pady=6)
+            else:
+                dl_btn = tk.Button(row, text="Download", font=(FONT_FAMILY, 10, "bold"),
+                                   bg=self.C["accent"], fg="#111", relief="flat",
+                                   command=lambda m_=m: self._start_download(m_))
+                dl_btn.pack(side="right", padx=12, pady=6)
+
+    def _delete_model(self, filename: str):
+        path = self._models_dir / filename
+        if path.exists():
+            path.unlink()
+        self._progress_lbl.config(text=f"Deleted {filename}")
+        self._refresh_list()
+
+    def _start_download(self, model: dict):
+        if self._download_thread and self._download_thread.is_alive():
+            self._progress_lbl.config(text="A download is already in progress.")
+            return
+
+        self._hf_token = self._token_entry.get().strip()
+        if model.get("gated") and not self._hf_token:
+            self._progress_lbl.config(
+                text="This model needs an HF token. Paste it in the field above.")
+            return
+
+        self._cancel.clear()
+        self._progress_bar_var.set(0)
+        self._progress_lbl.config(text=f"Downloading {model['name']}...")
+        self._download_thread = threading.Thread(
+            target=self._download_worker, args=(model,), daemon=True)
+        self._download_thread.start()
+        self._poll_download()
+
+    def _download_worker(self, model: dict):
+        """Download a model in a background thread, updating progress."""
+        from urllib.request import urlopen, Request
+        from urllib.error import URLError, HTTPError
+
+        dest = self._models_dir / model["hf_file"]
+        url = f"https://huggingface.co/{model['hf_repo']}/resolve/main/{model['hf_file']}"
+
+        try:
+            headers = {"User-Agent": "carry-ai/desktop"}
+            if self._hf_token:
+                headers["Authorization"] = f"Bearer {self._hf_token}"
+            req = Request(url, headers=headers)
+            with urlopen(req, timeout=600) as resp:
+                total = int(resp.headers.get("Content-Length", 0))
+                written = 0
+                with open(dest, "wb") as f:
+                    while True:
+                        if self._cancel.is_set():
+                            f.close()
+                            dest.unlink(missing_ok=True)
+                            self._dl_result = ("cancelled", "Download cancelled.")
+                            return
+                        chunk = resp.read(65536)
+                        if not chunk:
+                            break
+                        f.write(chunk)
+                        written += len(chunk)
+                        if total:
+                            self._dl_progress = written * 100.0 / total
+                            self._dl_status = (
+                                f"{model['name']}: "
+                                f"{written / 1_048_576:.0f} / {total / 1_048_576:.0f} MB "
+                                f"({self._dl_progress:.0f}%)"
+                            )
+            self._dl_result = ("ok", f"{model['name']} downloaded successfully!")
+        except HTTPError as e:
+            dest.unlink(missing_ok=True)
+            if e.code == 401:
+                self._dl_result = ("error",
+                    f"401 Unauthorized — accept the license at "
+                    f"https://huggingface.co/{model['hf_repo'].split('/')[0]} "
+                    f"and check your HF token.")
+            else:
+                self._dl_result = ("error", f"HTTP {e.code}: {e.reason}")
+        except (URLError, OSError) as e:
+            dest.unlink(missing_ok=True)
+            self._dl_result = ("error", str(e))
+
+    _dl_progress = 0.0
+    _dl_status = ""
+    _dl_result: tuple | None = None
+
+    def _poll_download(self):
+        """Update progress bar from download thread."""
+        if self._dl_result:
+            status, msg = self._dl_result
+            self._dl_result = None
+            self._progress_bar_var.set(100 if status == "ok" else 0)
+            self._progress_lbl.config(text=msg)
+            self._refresh_list()
+            return
+
+        self._progress_bar_var.set(self._dl_progress)
+        if self._dl_status:
+            self._progress_lbl.config(text=self._dl_status)
+        self._win.after(100, self._poll_download)
 
 
 # ---------------------------------------------------------------------------

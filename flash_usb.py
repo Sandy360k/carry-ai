@@ -77,48 +77,74 @@ GET_PIP_URL = "https://bootstrap.pypa.io/get-pip.py"
 # ---------------------------------------------------------------------------
 # GGUF model catalogue
 # ---------------------------------------------------------------------------
+# Models marked gated=True require a HuggingFace token (Gemma, Llama).
+# The user is prompted for their token at download time if any gated
+# model is selected.  Get a token at: https://huggingface.co/settings/tokens
+# and accept the model license on its HuggingFace page first.
 GGUF_MODELS = [
+    {
+        "name": "Qwen2.5 1.5B Q4_K_M",
+        "ram_gb": 2, "size_gb": 1.1,
+        "description": "Tiny fallback — fits any machine",
+        "hf_repo": "Qwen/Qwen2.5-1.5B-Instruct-GGUF",
+        "hf_file": "qwen2.5-1.5b-instruct-q4_k_m.gguf",
+        "gated": False,
+    },
     {
         "name": "Gemma 3 1B Q4_K_M",
         "ram_gb": 2, "size_gb": 0.8,
-        "description": "Emergency fallback — fits any machine",
+        "description": "Google Gemma, tiny, good quality [needs HF token]",
         "hf_repo": "bartowski/gemma-3-1b-it-GGUF",
         "hf_file": "gemma-3-1b-it-Q4_K_M.gguf",
+        "gated": True,
+    },
+    {
+        "name": "Qwen2.5 3B Q4_K_M",
+        "ram_gb": 4, "size_gb": 2.0,
+        "description": "Good quality, 4 GB RAM",
+        "hf_repo": "Qwen/Qwen2.5-3B-Instruct-GGUF",
+        "hf_file": "qwen2.5-3b-instruct-q4_k_m.gguf",
+        "gated": False,
     },
     {
         "name": "Phi-4-mini Q4_K_M",
-        "ram_gb": 4, "size_gb": 2.4,
-        "description": "Good quality, 4 GB RAM, tool calling",
+        "ram_gb": 5, "size_gb": 2.4,
+        "description": "Strong reasoning + tool calling, 5 GB RAM",
         "hf_repo": "bartowski/Phi-4-mini-instruct-GGUF",
         "hf_file": "Phi-4-mini-instruct-Q4_K_M.gguf",
-    },
-    {
-        "name": "Qwen3 4B Q4_K_M",
-        "ram_gb": 5, "size_gb": 2.8,
-        "description": "Strong reasoning + tool calling, 5 GB RAM",
-        "hf_repo": "bartowski/Qwen3-4B-GGUF",
-        "hf_file": "Qwen3-4B-Q4_K_M.gguf",
+        "gated": False,
     },
     {
         "name": "Gemma 4 E4B Q4_K_M",
         "ram_gb": 6, "size_gb": 3.1,
-        "description": "Multimodal vision, 6 GB RAM",
+        "description": "Multimodal vision, 6 GB RAM [needs HF token]",
         "hf_repo": "bartowski/gemma-4-e4b-GGUF",
         "hf_file": "gemma-4-e4b-Q4_K_M.gguf",
+        "gated": True,
     },
     {
-        "name": "Qwen3 8B Q4_K_M",
-        "ram_gb": 8, "size_gb": 5.2,
-        "description": "Best quality under 8 GB, tool calling",
-        "hf_repo": "bartowski/Qwen3-8B-GGUF",
-        "hf_file": "Qwen3-8B-Q4_K_M.gguf",
+        "name": "Qwen2.5 7B Q4_K_M",
+        "ram_gb": 6, "size_gb": 4.7,
+        "description": "Strong all-around model, 6 GB RAM",
+        "hf_repo": "Qwen/Qwen2.5-7B-Instruct-GGUF",
+        "hf_file": "qwen2.5-7b-instruct-q4_k_m.gguf",
+        "gated": False,
     },
     {
-        "name": "Qwen3 14B Q4_K_M",
+        "name": "Qwen2.5 7B Q8_0",
+        "ram_gb": 10, "size_gb": 8.1,
+        "description": "High quality 7B, 10 GB RAM",
+        "hf_repo": "Qwen/Qwen2.5-7B-Instruct-GGUF",
+        "hf_file": "qwen2.5-7b-instruct-q8_0.gguf",
+        "gated": False,
+    },
+    {
+        "name": "Qwen2.5 14B Q4_K_M",
         "ram_gb": 12, "size_gb": 9.0,
-        "description": "High quality, 12 GB RAM, tool calling",
-        "hf_repo": "bartowski/Qwen3-14B-GGUF",
-        "hf_file": "Qwen3-14B-Q4_K_M.gguf",
+        "description": "Best quality, 12 GB RAM, tool calling",
+        "hf_repo": "Qwen/Qwen2.5-14B-Instruct-GGUF",
+        "hf_file": "qwen2.5-14b-instruct-q4_k_m.gguf",
+        "gated": False,
     },
 ]
 
@@ -363,13 +389,17 @@ def _dir_mb(path: Path) -> float:
 # Downloads
 # ---------------------------------------------------------------------------
 
-def download_file_with_progress(url: str, dest: Path, label: str = "") -> bool:
+def download_file_with_progress(url: str, dest: Path, label: str = "",
+                                hf_token: str = "") -> bool:
     """Download url → dest with a simple inline progress bar."""
     dest.parent.mkdir(parents=True, exist_ok=True)
     label = label or dest.name
     try:
-        req = Request(url, headers={"User-Agent": "carry-ai/flash_usb"})
-        with urlopen(req, timeout=300) as resp:
+        headers = {"User-Agent": "carry-ai/flash_usb"}
+        if hf_token:
+            headers["Authorization"] = f"Bearer {hf_token}"
+        req = Request(url, headers=headers)
+        with urlopen(req, timeout=600) as resp:
             total = int(resp.headers.get("Content-Length", 0))
             written = 0
             with open(dest, "wb") as f:
@@ -394,16 +424,25 @@ def download_file_with_progress(url: str, dest: Path, label: str = "") -> bool:
         return False
 
 
-def download_gguf_model(model: dict, models_dir: Path) -> bool:
+def download_gguf_model(model: dict, models_dir: Path, hf_token: str = "") -> bool:
     """Download a GGUF model from HuggingFace onto the USB."""
     models_dir.mkdir(parents=True, exist_ok=True)
     dest = models_dir / model["hf_file"]
     if dest.exists():
-        console.print(f"  [green]✓[/green] Already present: {dest.name}")
+        size_gb = dest.stat().st_size / (1024**3)
+        console.print(f"  [green]✓[/green] Already present: {dest.name} ({size_gb:.1f} GB)")
         return True
     url = f"https://huggingface.co/{model['hf_repo']}/resolve/main/{model['hf_file']}"
     console.print(f"  Downloading {model['name']} (~{model['size_gb']:.1f} GB) ...")
-    return download_file_with_progress(url, dest, model["hf_file"])
+    console.print(f"    URL: {url}")
+    ok = download_file_with_progress(url, dest, model["hf_file"], hf_token=hf_token)
+    if not ok:
+        console.print(
+            f"  [yellow]Tip:[/yellow] If this is a gated model (Gemma, Llama), you need a\n"
+            f"  HuggingFace token. Get one at https://huggingface.co/settings/tokens\n"
+            f"  Then set: HF_TOKEN=hf_xxx python flash_usb.py"
+        )
+    return ok
 
 
 # ---------------------------------------------------------------------------
@@ -644,9 +683,11 @@ def main() -> None:
 
     # Model selection
     console.print("  [bold]Available GGUF models:[/bold]")
+    console.print("  [dim](Models marked [needs HF token] require a free HuggingFace token)[/dim]\n")
     for i, m in enumerate(GGUF_MODELS, 1):
         tag = " [green]← recommended[/green]" if m["name"] == recommended["name"] else ""
-        console.print(f"  [{i}] {m['name']}  ~{m['size_gb']:.1f} GB  |  {m['ram_gb']} GB RAM  —  {m['description']}{tag}")
+        gated_tag = " [yellow]🔑[/yellow]" if m.get("gated") else ""
+        console.print(f"  [{i}] {m['name']}  ~{m['size_gb']:.1f} GB  |  {m['ram_gb']} GB RAM  —  {m['description']}{tag}{gated_tag}")
     print()
     model_input = input(
         "  Download models? (comma-separated numbers, Enter to skip, r for recommended): "
@@ -663,6 +704,58 @@ def main() -> None:
                     chosen_models.append(GGUF_MODELS[mi])
             except ValueError:
                 pass
+
+    # If any gated model is selected, prompt for HF token right here
+    hf_token = os.environ.get("HF_TOKEN", "")
+    needs_token = any(m.get("gated") for m in chosen_models)
+    if needs_token and not hf_token:
+        print()
+        # Build owner-specific license instructions
+        owners = set()
+        for m in chosen_models:
+            if m.get("gated"):
+                repo = m["hf_repo"]
+                # e.g. "bartowski/gemma-3-1b-it-GGUF" → base model is google/gemma-3-1b-it
+                if "gemma" in repo.lower():
+                    owners.add("google")
+                elif "llama" in repo.lower():
+                    owners.add("meta-llama")
+
+        license_lines = ""
+        if "google" in owners:
+            license_lines += (
+                "\n  [bold]Google Gemma[/bold] license:\n"
+                "    → https://huggingface.co/google/gemma-3-1b-it\n"
+                "    Click 'Agree and access repository' (requires Google account)\n"
+            )
+        if "meta-llama" in owners:
+            license_lines += (
+                "\n  [bold]Meta Llama[/bold] license:\n"
+                "    → https://huggingface.co/meta-llama/Llama-3.3-70B-Instruct\n"
+                "    Click 'Agree and access repository' (requires Meta approval)\n"
+            )
+
+        _panel(
+            "HuggingFace Token Required",
+            "One or more selected models are gated.\n"
+            "To download them you need a free HuggingFace token.\n\n"
+            "Step 1 — Create a token:\n"
+            "  1. Sign up at https://huggingface.co/join (free)\n"
+            "  2. Go to https://huggingface.co/settings/tokens\n"
+            "  3. Create a token with 'Read' access\n\n"
+            "Step 2 — Accept the model license:"
+            + license_lines +
+            "\n"
+            "Step 3 — Paste your token below:",
+            style="yellow",
+        )
+        try:
+            hf_token = input("  HuggingFace token (hf_...): ").strip()
+        except (EOFError, KeyboardInterrupt):
+            hf_token = ""
+        if not hf_token:
+            console.print("  [yellow]No token entered. Gated models will be skipped.[/yellow]")
+            chosen_models = [m for m in chosen_models if not m.get("gated")]
 
     # Build package list
     packages: list[str] = list(PACKAGE_GROUPS["core"])
@@ -726,7 +819,7 @@ def main() -> None:
         console.print(f"\n[bold]3e.[/bold] Downloading {len(chosen_models)} GGUF model(s) ...")
         models_dir = usb_root / "models"
         for m in chosen_models:
-            ok = download_gguf_model(m, models_dir)
+            ok = download_gguf_model(m, models_dir, hf_token=hf_token)
             if not ok:
                 console.print(f"  [yellow]⚠ Failed to download {m['name']}[/yellow]")
 
@@ -765,12 +858,156 @@ def main() -> None:
         )
     body += "Run  python carry-ai/onboard.py  on the target machine for first-time setup."
 
+    body += (
+        "To download more models later:\n"
+        "  python flash_usb.py --add-models --target " + str(usb_root) + "\n"
+    )
+
     _panel("Your USB is ready!" if all_ok else "Flash complete (with warnings)", body, style=status)
 
 
+# ---------------------------------------------------------------------------
+# Add-models mode — download extra models onto an existing USB
+# ---------------------------------------------------------------------------
+
+def add_models_wizard(target_path: str) -> None:
+    """Interactive wizard to download GGUF models onto an existing USB."""
+    usb_root = Path(target_path).resolve()
+    models_dir = usb_root / "models"
+
+    _panel(
+        "carry-ai — Download Models",
+        f"Target: {usb_root}\n"
+        f"Models directory: {models_dir}\n",
+        style="cyan",
+    )
+
+    # Show existing models
+    existing = list(models_dir.glob("*.gguf")) if models_dir.is_dir() else []
+    if existing:
+        console.print("  [bold]Already downloaded:[/bold]")
+        for f in existing:
+            size_gb = f.stat().st_size / (1024**3)
+            console.print(f"    ✓ {f.name}  ({size_gb:.1f} GB)")
+        print()
+
+    # Show catalogue
+    ram = detect_host_ram()
+    recommended = next((m for m in reversed(GGUF_MODELS) if m["ram_gb"] <= ram), GGUF_MODELS[0])
+
+    console.print(f"  Host RAM: [bold]{ram:.1f} GB[/bold]")
+    console.print(f"  Recommended: [bold]{recommended['name']}[/bold]\n")
+    console.print("  [bold]Available models:[/bold]")
+    console.print("  [dim](Models marked [needs HF token] require a free HuggingFace token)[/dim]\n")
+
+    for i, m in enumerate(GGUF_MODELS, 1):
+        tag = " [green]← recommended[/green]" if m["name"] == recommended["name"] else ""
+        gated_tag = " [yellow]🔑[/yellow]" if m.get("gated") else ""
+        # Mark if already downloaded
+        dest = models_dir / m["hf_file"]
+        dl_tag = " [dim](already downloaded)[/dim]" if dest.exists() else ""
+        console.print(f"  [{i}] {m['name']}  ~{m['size_gb']:.1f} GB  |  {m['ram_gb']} GB RAM  —  {m['description']}{tag}{gated_tag}{dl_tag}")
+
+    print()
+    try:
+        model_input = input(
+            "  Download models? (comma-separated numbers, Enter to quit, r for recommended): "
+        ).strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        print()
+        return
+
+    chosen: list[dict] = []
+    if model_input == "r":
+        chosen = [recommended]
+    elif model_input:
+        for part in model_input.split(","):
+            try:
+                mi = int(part.strip()) - 1
+                if 0 <= mi < len(GGUF_MODELS):
+                    chosen.append(GGUF_MODELS[mi])
+            except ValueError:
+                pass
+
+    if not chosen:
+        console.print("  No models selected.")
+        return
+
+    # HF token for gated models
+    hf_token = os.environ.get("HF_TOKEN", "")
+    needs_token = any(m.get("gated") for m in chosen)
+    if needs_token and not hf_token:
+        owners = set()
+        for m in chosen:
+            if m.get("gated"):
+                if "gemma" in m["hf_repo"].lower():
+                    owners.add("google")
+                elif "llama" in m["hf_repo"].lower():
+                    owners.add("meta-llama")
+
+        license_lines = ""
+        if "google" in owners:
+            license_lines += (
+                "\n  Google Gemma: https://huggingface.co/google/gemma-3-1b-it"
+                "\n    → click 'Agree and access repository'\n"
+            )
+        if "meta-llama" in owners:
+            license_lines += (
+                "\n  Meta Llama: https://huggingface.co/meta-llama/Llama-3.3-70B-Instruct"
+                "\n    → click 'Agree and access repository'\n"
+            )
+
+        console.print(
+            "\n  [yellow]Gated model selected.[/yellow] You need a HuggingFace token.\n"
+            "  Get one at: https://huggingface.co/settings/tokens\n"
+            "  Accept the license:" + license_lines
+        )
+        try:
+            hf_token = input("  HuggingFace token (hf_...): ").strip()
+        except (EOFError, KeyboardInterrupt):
+            hf_token = ""
+        if not hf_token:
+            console.print("  [yellow]No token. Skipping gated models.[/yellow]")
+            chosen = [m for m in chosen if not m.get("gated")]
+
+    # Download
+    print()
+    for m in chosen:
+        download_gguf_model(m, models_dir, hf_token=hf_token)
+
+    # Summary
+    all_models = list(models_dir.glob("*.gguf"))
+    total_gb = sum(f.stat().st_size for f in all_models) / (1024**3)
+    console.print(f"\n  [green]Done.[/green] {len(all_models)} model(s) on USB, {total_gb:.1f} GB total.")
+
+
+# ---------------------------------------------------------------------------
+# Entry point
+# ---------------------------------------------------------------------------
+
 if __name__ == "__main__":
     try:
-        main()
+        # --add-models mode
+        if "--add-models" in sys.argv:
+            target = None
+            if "--target" in sys.argv:
+                idx = sys.argv.index("--target")
+                if idx + 1 < len(sys.argv):
+                    target = sys.argv[idx + 1]
+            if not target:
+                # Try to detect from current dir or parent
+                if (Path(".") / "carry-ai").is_dir():
+                    target = str(Path(".").resolve())
+                elif (Path(".").parent / "carry-ai").is_dir():
+                    target = str(Path(".").parent.resolve())
+                else:
+                    target = input("  USB path (e.g. H:\\): ").strip()
+            if target:
+                add_models_wizard(target)
+            else:
+                print("Usage: python flash_usb.py --add-models --target H:\\")
+        else:
+            main()
     except KeyboardInterrupt:
         print("\n\nAborted.")
         sys.exit(0)
