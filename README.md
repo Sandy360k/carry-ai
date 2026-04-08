@@ -354,6 +354,24 @@ SQLite + FTS5 long-term memory that survives USB ejects and reboots (inspired by
 
 ---
 
+## Desktop App
+
+Native chat window that launches when you click `start.bat` / `start.sh`:
+
+- **Claude-like chat interface** — dark theme, streaming responses, code blocks
+- **Sidebar** — provider selector (Anthropic, OpenAI, Google, Groq, OpenRouter, Local), model picker
+- **Zero config launch** — double-click start.bat on USB, chat window appears
+- **Keyboard shortcuts** — Enter to send, Shift+Enter for newline, Escape to clear
+
+Uses `customtkinter` for a modern look (falls back to plain `tkinter` if not installed). File: [`ui/desktop.py`](ui/desktop.py).
+
+```bash
+python ui/desktop.py       # direct launch
+# or just double-click start.bat / bash start.sh on the USB
+```
+
+---
+
 ## Web UI
 
 Chat interface at `http://localhost:8080`:

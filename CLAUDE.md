@@ -52,7 +52,8 @@ carry-ai/
 │   └── memory.py            # SQLite-backed persistent memory (FTS5, v2)
 
 ├── ui/
-│   └── app.py               # Flask SPA at localhost:8080 (HTML/CSS/JS embedded)
+│   ├── app.py               # Flask SPA at localhost:8080 (HTML/CSS/JS embedded)
+│   └── desktop.py           # Native desktop chat app (customtkinter/tkinter)
 
 ├── mcp/
 │   ├── client.py            # JSON-RPC transport (stdio, HTTP, SSE)
