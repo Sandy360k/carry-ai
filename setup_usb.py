@@ -142,20 +142,49 @@ PROJECT_ROOT = Path(__file__).resolve().parent
 # Path helpers
 # ---------------------------------------------------------------------------
 
-def find_usb_root() -> Path:
-    """Find the USB root directory (parent of carry-ai/).
+def find_usb_root(target_override: str | None = None) -> Path:
+    """Resolve the USB root directory.
 
-    In normal USB deployment the layout is:
-        USB_ROOT/carry-ai/setup_usb.py   ← this file
-        USB_ROOT/python-env/
-        USB_ROOT/start.bat
-
-    Falls back to PROJECT_ROOT.parent or PROJECT_ROOT itself (dev mode).
+    Priority:
+      1. --target <path> CLI argument (passed in as target_override)
+      2. Parent of this script when laid out as USB_ROOT/carry-ai/setup_usb.py
     """
+    if target_override:
+        p = Path(target_override).resolve()
+        if not p.exists():
+            console.print(f"  [red]✗ --target path does not exist: {p}[/red]")
+            sys.exit(1)
+        return p
+
     candidate = PROJECT_ROOT.parent
     if (candidate / "carry-ai").is_dir() or candidate != PROJECT_ROOT:
         return candidate
     return PROJECT_ROOT.parent
+
+
+def is_removable_drive(path: Path) -> bool:
+    """Return True if *path* lives on a removable/USB drive."""
+    system = platform.system().lower()
+    if system == "windows":
+        try:
+            import ctypes
+            drive = str(path)[:3]          # e.g. "E:\\"
+            DRIVE_REMOVABLE = 2
+            return ctypes.windll.kernel32.GetDriveTypeW(drive) == DRIVE_REMOVABLE
+        except Exception:
+            return False
+    elif system == "linux":
+        try:
+            import subprocess as _sp
+            # Walk up to find the real block device mount
+            result = _sp.run(
+                ["lsblk", "-no", "RM", "--raw", str(path)],
+                capture_output=True, text=True, timeout=3,
+            )
+            return "1" in result.stdout
+        except Exception:
+            return False
+    return False
 
 
 def get_env_dirs(usb_root: Path) -> dict:
@@ -486,6 +515,17 @@ def _dir_size_mb(path: Path) -> float:
 # Main wizard
 # ---------------------------------------------------------------------------
 
+def _parse_target() -> str | None:
+    """Extract --target <path> from sys.argv if present."""
+    args = sys.argv[1:]
+    for i, a in enumerate(args):
+        if a in ("--target", "-t") and i + 1 < len(args):
+            return args[i + 1]
+        if a.startswith("--target="):
+            return a.split("=", 1)[1]
+    return None
+
+
 def main() -> None:
     current_os = platform.system().lower()
     is_windows = current_os == "windows"
@@ -498,12 +538,35 @@ def main() -> None:
         style="cyan"
     )
 
-    usb_root = find_usb_root()
+    target_override = _parse_target()
+    usb_root = find_usb_root(target_override)
     dirs = get_env_dirs(usb_root)
 
     console.print(f"  USB root detected : [bold]{usb_root}[/bold]")
     console.print(f"  Env target        : [bold]{dirs['env']}[/bold]")
     console.print(f"  Running on        : [bold]{current_os}[/bold]")
+    print()
+
+    # ---- Removable drive check --------------------------------------------
+    if not target_override and not is_removable_drive(usb_root):
+        _panel(
+            "Not a USB drive",
+            f"The detected root is:\n  {usb_root}\n\n"
+            "This looks like a local folder, not a USB drive.\n\n"
+            "Did you mean to use flash_usb.py instead?\n"
+            "  python flash_usb.py\n\n"
+            "flash_usb.py detects your USB drives automatically and copies\n"
+            "everything onto the USB for you.\n\n"
+            "If you DO want to install into this folder (e.g. for testing),\n"
+            "re-run with an explicit --target flag:\n"
+            f"  python setup_usb.py --target \"{usb_root}\"",
+            style="yellow",
+        )
+        if not _confirm("Continue installing into this local folder anyway?", default=False):
+            console.print("\n  Tip: Insert your USB drive and run  python flash_usb.py\n")
+            sys.exit(0)
+        print()
+
     print()
 
     # Disk space check
