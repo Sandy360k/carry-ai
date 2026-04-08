@@ -1,261 +1,321 @@
-# carry-ai -- Carry Your AI on a USB Stick
+# carry-ai
 
-Portable AI assistant that injects into any Windows or Linux machine from a USB drive.
-Runs entirely from RAM, never permanently installs, and wipes all traces on eject.
+> Plug in. Chat. Eject. Leave no trace.
+
+A portable AI assistant that lives on a USB drive. Plug it into any Windows or Linux machine, run one command, and you have a full AI agent at `localhost:8080` — with local GGUF models, cloud API failover, voice mode, persistent memory, and 30+ tools. Eject the USB and everything is wiped.
+
+```
+   ____                                _    ___
+  / ___|__ _ _ __ _ __ _   _          / \  |_ _|
+ | |   / _` | '__| '__| | | |  ___  / _ \  | |
+ | |__| (_| | |  | |  | |_| | |___| / ___ \ | |
+  \____\__,_|_|  |_|   \__, |      /_/   \_\___|
+                        |___/
+  Portable AI Assistant — inject, assist, vanish.
+```
+
+![Python](https://img.shields.io/badge/python-3.10%2B-blue)
+![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux-lightgrey)
+![License](https://img.shields.io/badge/license-MIT-green)
+
+---
+
+## Table of Contents
+
+- [Quick Start](#quick-start)
+- [Three Modes](#three-modes)
+- [Features](#features)
+- [Voice Mode](#voice-mode)
+- [API Providers](#api-providers)
+- [Local Models](#local-models)
+- [Agent & Tools](#agent--tools)
+- [Persistent Memory](#persistent-memory)
+- [Web UI](#web-ui)
+- [MCP Integration](#mcp-integration)
+- [Plugin System](#plugin-system)
+- [Cowork Features](#cowork-features)
+- [Configuration](#configuration)
+- [Security & Cleanup](#security--cleanup)
+- [Packaging to USB](#packaging-to-usb)
+- [Project Structure](#project-structure)
+- [Referenced Projects](#referenced-projects)
+- [Requirements](#requirements)
+- [License](#license)
+
+---
 
 ## Quick Start
 
-### New here? Run the onboarding wizard first:
+**New to carry-ai? Run the onboarding wizard:**
 
 ```bash
 python onboard.py
 ```
 
-The wizard guides you through system checks, dependency install, mode selection, API key setup, voice pipeline configuration, and a dry-run validation — then prints the exact command to launch.
+The wizard handles everything: system check → dependency install → mode selection → API keys → voice setup → config generation → dry-run validation → launch command.
 
----
+**Or jump straight in:**
 
-**Windows (after onboarding):** Double-click `start.bat` or run:
 ```bash
+# Windows
 python carry-ai/launcher.py
-```
 
-**Linux (after onboarding):** Run from terminal:
-```bash
-bash start.sh
-# or
+# Linux
 python3 carry-ai/launcher.py
+# or: bash start.sh
 ```
 
-**Launcher options:**
+**Launcher flags:**
+
 ```
-python launcher.py                  # Auto-detect everything and boot
-python launcher.py --dry-run        # Test without USB hardware
-python launcher.py --mode api       # Force API mode
-python launcher.py --mode local     # Force local mode (needs GGUF model)
-python launcher.py --mode hybrid    # Local first, API fallback
-python launcher.py --port 9090      # Custom web UI port
-python launcher.py --no-ui          # CLI-only, no web server
-python launcher.py --download-model # Download GGUF model from HuggingFace
-python launcher.py --verbose        # Debug logging
+python launcher.py                   # Auto-detect mode and boot
+python launcher.py --dry-run         # Test without USB hardware
+python launcher.py --mode api        # Force API-only mode
+python launcher.py --mode local      # Force local GGUF mode
+python launcher.py --mode hybrid     # Local first, API fallback
+python launcher.py --download-model  # Download a GGUF model first
+python launcher.py --port 9090       # Custom web UI port
+python launcher.py --no-ui           # Headless CLI, no web server
+python launcher.py --verbose         # Debug logging
 ```
 
 See [`docs/getting-started.md`](docs/getting-started.md) for the full manual setup guide.
 
+---
+
 ## Three Modes
 
 | Mode | How it works | Requirements |
-|------|-------------|-------------|
-| **Local** | Offline via llama.cpp + GGUF models | 3GB+ RAM, llama-server binary |
-| **API** | Cloud providers with auto-failover | Internet + at least one API key |
-| **Hybrid** | Local first, API fallback on failure | Both of the above |
+|------|-------------|--------------|
+| **Local** | Fully offline via llama.cpp + GGUF models | 3 GB+ RAM, llama-server binary |
+| **API** | Cloud providers with auto-failover chain | Internet + at least one API key |
+| **Hybrid** | Local first, transparent API fallback | Both of the above |
 
-## Model Tiers (Local Mode)
+Mode is auto-detected from what's available, or forced with `--mode`.
 
-The system auto-selects the best model your RAM can handle (12 tiers):
+---
 
-| RAM | Model | Context | Features |
-|-----|-------|---------|----------|
-| 32GB+ | Qwen3 30B Q6_K | 16384 | Tool calling |
-| 24GB+ | Llama 4 Scout 17B Q6_K | 16384 | Tool calling, multimodal |
-| 20GB+ | Qwen3 14B Q8_0 | 12288 | Tool calling |
-| 16GB+ | Gemma 4 12B Q4_K_M | 12288 | Tool calling, multimodal |
-| 12GB+ | Qwen3 14B Q4_K_M | 8192 | Tool calling |
-| 10GB+ | Qwen3 8B Q8_0 | 8192 | Tool calling |
-| 8GB+ | Qwen3 8B Q4_K_M | 8192 | Tool calling |
-| 6GB+ | Gemma 4 E4B Q4_K_M | 8192 | Multimodal |
-| 5GB+ | Qwen3.5 4B Q4_K_M | 4096 | Tool calling |
-| 4GB+ | Phi-4-mini Q4_K_M | 4096 | Tool calling |
-| 3GB+ | Gemma 4 E2B Q4_K_M | 4096 | |
-| <3GB | Gemma 3 1B Q4_K_M | 2048 | Emergency fallback |
+## Features
 
-Quantization-aware matching ensures Q8 vs Q4 files map to the correct tier.
+- **Portable** — runs from USB, zero permanent install on the host machine
+- **Offline-capable** — local GGUF inference via llama.cpp, 12 RAM tiers auto-selected
+- **7 cloud providers** — Anthropic, OpenAI, Google, Groq, OpenRouter, G0DM0D3, Onyx
+- **Automatic failover** — health-tracked provider chain with exponential backoff
+- **Voice mode** — push-to-talk → AssemblyAI transcription → Claude vision → ElevenLabs TTS
+- **30+ agent tools** — shell, files, web scraping, screenshots, clipboard, Google Workspace
+- **Persistent memory** — SQLite + FTS5, survives sessions, dedup + relevance decay
+- **MCP support** — connect any MCP server via stdio, HTTP, or SSE
+- **Plugin system** — manifest-based tools, hooks, and lifecycle scripts
+- **Encrypted keys** — Fernet + PBKDF2 (600k iterations), decrypted in RAM only
+- **Nuclear cleanup** — 6-step trace wipe on USB eject (processes, tmpfs, clipboard, history)
+- **Web UI** — Flask SPA at `localhost:8080`, dark/light theme, real-time streaming
 
-## HuggingFace Model Downloader
+---
 
-Browse, search, and download GGUF models directly onto the USB:
+## Voice Mode
 
-```bash
-python models/downloader.py interactive          # Interactive wizard
-python models/downloader.py search "Qwen3 8B"    # Search HuggingFace
-python models/downloader.py list bartowski/Qwen3-8B-GGUF  # List quants
-python models/downloader.py suggest --ram 16      # RAM-based suggestions
-python models/downloader.py local                 # List downloaded models
-```
-
-Features: dual backend (huggingface_hub or pure requests), resume support,
-quantization-level sorting, RAM-based suggestions for all 12 tiers.
-
-## API Providers
-
-Seven providers with automatic failover chain and health tracking:
-
-| Provider | Models | Auth | Reference |
-|----------|--------|------|-----------|
-| **Anthropic** | Claude Opus/Sonnet/Haiku 4 | API key | |
-| **Google** | Gemini 2.5 Pro/Flash, 2.0 Flash | API key or OAuth | |
-| **OpenAI** | GPT-4o, o4-mini, o3 | API key | |
-| **Groq** | Llama 3.3 70B, Mixtral, Gemma2 | API key | |
-| **OpenRouter** | 13+ models (multi-provider) | API key | |
-| **G0DM0D3** | ULTRAPLINIAN racing, CONSORTIUM synthesis, AutoTune | API key | [elder-plinius/G0DM0D3](https://github.com/elder-plinius/G0DM0D3) |
-| **Onyx** | RAG-enhanced (50+ data connectors) | API key | [onyx-dot-app/onyx](https://github.com/onyx-dot-app/onyx) |
-
-Per-provider health tracking: success rate, rolling latency, rate limit detection.
-Automatic retry with exponential backoff and full fallback chain.
-
-### G0DM0D3 Integration
-
-Multi-model racing and synthesis via [G0DM0D3](https://github.com/elder-plinius/G0DM0D3):
-- **ULTRAPLINIAN**: Race 10-51 models in parallel, score and pick the best response
-- **CONSORTIUM**: Collect all responses, synthesize ground truth via orchestrator
-- **AutoTune**: Auto-detect query context (code, creative, analytical) and optimize sampling
-- **STM Modules**: Post-process output (hedge_reducer, direct_mode, concise_mode)
-
-### Onyx RAG Integration
-
-Connect to [Onyx](https://github.com/onyx-dot-app/onyx) for retrieval-augmented generation:
-- Route queries through Onyx for answers grounded in your organization's data
-- 50+ data connectors: Google Drive, Slack, Confluence, Notion, GitHub, etc.
-- Deep research mode for multi-step investigation
-- Also usable as MCP server for tool-level access to connectors
-
-## Encrypted Key Storage
-
-API keys are encrypted with Fernet (AES-128-CBC + HMAC-SHA256) using a
-passphrase-derived key (PBKDF2, 600K iterations). Keys are only decrypted in RAM.
-
-```bash
-python crypto/keystore.py setup        # Interactive key setup wizard
-python crypto/keystore.py list         # List configured providers
-python crypto/keystore.py add openai   # Add a single key
-python crypto/keystore.py remove groq  # Remove a provider
-```
-
-## How Injection Works
-
-**Windows:**
-- Extracts to `%TEMP%\ai_session\` with runtime/cache/logs subdirs
-- WMI watcher (preferred, event-driven) or ctypes polling fallback (2s interval)
-- On eject: kills process tree, wipes session dir, clears clipboard, zeros memory
-
-**Linux:**
-- Mounts tmpfs at `/tmp/ai_session/` (never touches host disk)
-- udev rule (3 tiers: vendor:product, kernel device, generic USB) triggers cleanup
-- Wipes tmpfs, removes udev rule, scrubs recently-used.xbel, clears clipboard
-
-## Voice Mode (Clicky-Inspired)
-
-Push-to-talk AI assistant with screen awareness and spoken responses — ported from [farzaa/clicky](https://github.com/farzaa/clicky) (Swift/macOS) to Python:
+Push-to-talk AI with screen awareness — ported from [farzaa/clicky](https://github.com/farzaa/clicky) (Swift/macOS) to Python:
 
 ```
-Hold Enter → speak → release
-  ↓ AssemblyAI transcribes audio
-  ↓ Screenshot captured (optional, for Claude vision)
-  ↓ Claude responds with text (+ optional [POINT:x,y:label] UI hints)
-  ↓ ElevenLabs speaks the response aloud
+Hold Enter → speak → release Enter
+      │
+      ▼  AssemblyAI
+  transcript text
+      │
+      ├──► screenshot (base64 PNG) ──► Claude vision
+      │
+      ▼  Claude response
+  spoken aloud via ElevenLabs
 ```
 
-**Setup** (handled automatically by `python onboard.py`):
+**Setup** (the onboarding wizard does this for you):
 ```bash
 pip install pyaudio assemblyai elevenlabs Pillow
 ```
 
-**Keys needed**: AssemblyAI (free 5h/month at assemblyai.com) + ElevenLabs (free 10k chars/month at elevenlabs.io)
+**Keys needed:**
+- [AssemblyAI](https://assemblyai.com) — free 5 hours/month
+- [ElevenLabs](https://elevenlabs.io) — free 10,000 characters/month
 
-**Enable in config**:
+**Enable in `config/settings.json`:**
 ```json
-{ "voice": { "enabled": true, "assemblyai_key": "...", "elevenlabs_key": "..." } }
+{
+  "voice": {
+    "enabled": true,
+    "assemblyai_key": "your-key",
+    "elevenlabs_key": "your-key",
+    "vision_enabled": true
+  }
+}
 ```
 
-All four voice deps are optional — carry-ai runs fine without them. See [`integrations/voice_tools.py`](integrations/voice_tools.py) and [`docs/providers.md`](docs/providers.md#assemblyai-voice--via-clicky-integration).
+All voice dependencies are optional — carry-ai runs fully without them. Implementation: [`integrations/voice_tools.py`](integrations/voice_tools.py).
+
+---
+
+## API Providers
+
+Seven providers with automatic failover and per-session health tracking (success rate, latency, consecutive failures):
+
+| Provider | Models | Auth |
+|----------|--------|------|
+| **Anthropic** | Claude Opus/Sonnet/Haiku 4.x | API key |
+| **OpenAI** | GPT-4o, o4-mini, o3 | API key |
+| **Google** | Gemini 2.5 Pro/Flash, 2.0 Flash | API key or OAuth |
+| **Groq** | Llama 3.3 70B, Mixtral, Gemma2 | API key |
+| **OpenRouter** | 13+ models (multi-provider) | API key |
+| **G0DM0D3** | ULTRAPLINIAN racing, CONSORTIUM synthesis, AutoTune | API key |
+| **Onyx** | RAG-enhanced (50+ data connectors) | API key + Onyx instance |
+
+Manage keys:
+```bash
+python crypto/keystore.py setup    # Interactive wizard
+python crypto/keystore.py list     # Show configured providers
+python crypto/keystore.py add openai
+python crypto/keystore.py remove groq
+```
+
+Keys are encrypted with Fernet (AES-128-CBC + HMAC-SHA256) using PBKDF2 (600,000 iterations). They live in `config/providers.enc` on the USB and are only decrypted into RAM at runtime.
+
+See [`docs/providers.md`](docs/providers.md) for per-provider setup details.
+
+### G0DM0D3 — Multi-Model Racing
+
+Via [G0DM0D3](https://github.com/elder-plinius/G0DM0D3):
+- **ULTRAPLINIAN** — race 10–51 models in parallel, score and pick the best response
+- **CONSORTIUM** — collect all responses, synthesize a ground-truth answer
+- **AutoTune** — auto-detect query context (code / creative / analytical) and optimize sampling
+
+### Onyx — RAG Integration
+
+Via [Onyx](https://github.com/onyx-dot-app/onyx):
+- Answers grounded in your organization's data (Google Drive, Slack, Confluence, Notion, GitHub, etc.)
+- 50+ connectors, deep research mode, also usable as an MCP server
+
+---
+
+## Local Models
+
+The system auto-selects the best GGUF model for your available RAM (12 tiers):
+
+| RAM | Model | Context | Features |
+|-----|-------|---------|----------|
+| 32 GB+ | Qwen3 30B Q6_K | 16384 | Tool calling |
+| 24 GB+ | Llama 4 Scout 17B Q6_K | 16384 | Tool calling, multimodal |
+| 20 GB+ | Qwen3 14B Q8_0 | 12288 | Tool calling |
+| 16 GB+ | Gemma 4 12B Q4_K_M | 12288 | Tool calling, multimodal |
+| 12 GB+ | Qwen3 14B Q4_K_M | 8192 | Tool calling |
+| 10 GB+ | Qwen3 8B Q8_0 | 8192 | Tool calling |
+| 8 GB+ | Qwen3 8B Q4_K_M | 8192 | Tool calling |
+| 6 GB+ | Gemma 4 E4B Q4_K_M | 8192 | Multimodal |
+| 5 GB+ | Qwen3.5 4B Q4_K_M | 4096 | Tool calling |
+| 4 GB+ | Phi-4-mini Q4_K_M | 4096 | Tool calling |
+| 3 GB+ | Gemma 4 E2B Q4_K_M | 4096 | — |
+| < 3 GB | Gemma 3 1B Q4_K_M | 2048 | Emergency fallback |
+
+**Download a model:**
+```bash
+python models/downloader.py interactive          # Guided wizard
+python models/downloader.py search "Qwen3 8B"   # Search HuggingFace
+python models/downloader.py suggest --ram 16     # Get RAM-based suggestion
+python models/downloader.py local                # List downloaded models
+```
+
+Dual backend (huggingface_hub or pure requests), resume support, quantization-aware sorting.
 
 ---
 
 ## Agent & Tools
 
-ReAct-pattern agent (Observe -> Think -> Act -> Observe) with 30+ tools across 8 categories:
+ReAct-pattern agent loop (Observe → Think → Act → Observe) with 30+ tools:
 
-| Category | Tools | Source |
-|----------|-------|--------|
-| **System** | `shell`, `get_system_info`, `model_recommend` | built-in + [llmfit](https://github.com/AlexsJones/llmfit) |
-| **Files** | `read_file`, `write_file`, `edit_file`, `list_files`, `search_files` | built-in |
-| **Screen** | `screenshot`, `click`, `type_text` | built-in |
-| **Clipboard** | `clipboard_read`, `clipboard_write` | built-in |
-| **Web** | `web_fetch` (Scrapling-enhanced), `browse`, `scrape`, `scrape_stealth` | built-in + [Scrapling](https://github.com/D4Vinci/Scrapling) |
-| **Google** | `gdrive_list`, `gdrive_upload`, `gmail_search`, `gmail_send`, `gmail_read`, `gsheets_read`, `gsheets_append`, `gcalendar_agenda`, `gcalendar_create`, `gworkspace` | [googleworkspace/cli](https://github.com/googleworkspace/cli) |
-| **Memory** | `memory_store`, `memory_search`, `memory_list` | built-in + [claude-mem](https://github.com/thedotmack/claude-mem) |
+| Category | Tools |
+|----------|-------|
+| **System** | `shell`, `get_system_info`, `model_recommend` |
+| **Files** | `read_file`, `write_file`, `edit_file`, `list_files`, `search_files` |
+| **Screen** | `screenshot`, `click`, `type_text` |
+| **Clipboard** | `clipboard_read`, `clipboard_write` |
+| **Web** | `web_fetch`, `browse`, `scrape`, `scrape_stealth` (Scrapling-enhanced) |
+| **Google** | `gdrive_list/upload`, `gmail_search/send/read`, `gsheets_read/append`, `gcalendar_agenda/create` |
+| **Memory** | `memory_store`, `memory_search`, `memory_list` |
+| **Voice** | `voice_listen`, `voice_speak` (when voice mode enabled) |
 
-Three permission modes: `ask` (confirm dangerous ops), `yolo` (allow all), `safe` (block dangerous).
-16 dangerous command patterns detected (rm -rf, format, drop table, git push --force, etc.).
+**Permission modes:**
+
+| Mode | Behavior |
+|------|----------|
+| `ask` | Prompt before dangerous operations (default) |
+| `yolo` | Execute all tools without confirmation |
+| `safe` | Block dangerous patterns outright |
+
+16 dangerous patterns detected: `rm -rf`, `format`, `DROP TABLE`, `git push --force`, etc.
+
+**Slash commands:**
+```
+/status     — agent status (mode, model, turns, memory stats)
+/clear      — clear conversation history
+/tools      — list all available tools
+/permission — set permission mode
+/memory     — view/search/manage memories
+/remember   — store a note in long-term memory
+/forget     — remove a memory entry
+/history    — recent conversation
+/help       — all commands
+```
 
 ### Scrapling Web Scraping
 
-Enhanced web fetching via [Scrapling](https://github.com/D4Vinci/Scrapling):
-- **Adaptive element tracking**: auto-relocates elements after site layout changes
-- **Anti-bot bypass**: Cloudflare Turnstile, TLS fingerprint impersonation
-- **Three tiers**: Fetcher (HTTP), StealthyFetcher (headless+CF bypass), DynamicFetcher (Playwright)
-- **Rich selectors**: CSS (with `::text`, `::attr(href)`), XPath, regex
-- Falls back to `requests.get()` if Scrapling not installed
+Via [Scrapling](https://github.com/D4Vinci/Scrapling):
+- **Adaptive tracking** — auto-relocates elements after layout changes
+- **Anti-bot bypass** — Cloudflare Turnstile, TLS fingerprint impersonation
+- **Three tiers** — `Fetcher` (HTTP) → `StealthyFetcher` (headless + CF bypass) → `DynamicFetcher` (Playwright)
+- Falls back to `requests.get()` if not installed
 
-### Google Workspace CLI
+### Google Workspace
 
-Access Google Workspace via [GWS CLI](https://github.com/googleworkspace/cli):
-- **Drive**: list, upload, download, share files
-- **Gmail**: search, send, read emails
-- **Sheets**: read, write, append spreadsheet data
-- **Calendar**: view agenda, create events
-- **Generic**: any Workspace API via `gworkspace` tool
-- Auth: `gws auth login` once, or service account
+Via [GWS CLI](https://github.com/googleworkspace/cli): Drive, Gmail, Sheets, Calendar — auth once with `gws auth login`.
 
 ### Hardware-Aware Model Selection
 
-Powered by [llmfit](https://github.com/AlexsJones/llmfit):
-- **4-dimensional scoring**: Quality, Speed, Fit, Context (each 0-100)
-- **GPU detection**: NVIDIA, AMD, Intel, Apple Silicon with VRAM profiling
-- **Auto GPU offload**: computes optimal `n_gpu_layers` for hybrid inference
-- **Speed estimation**: memory bandwidth-based tokens/sec prediction
-- Falls back to carry-ai's static 12-tier RAM matching if llmfit not installed
+Via [llmfit](https://github.com/AlexsJones/llmfit): 4-dimensional scoring (Quality / Speed / Fit / Context), GPU detection (NVIDIA, AMD, Intel, Apple Silicon), auto GPU offload computation. Falls back to the static 12-tier RAM table if not installed.
 
-### Agent Slash Commands
-
-```
-/status     -- Show agent status (mode, model, turns, memory stats)
-/clear      -- Clear conversation history
-/tools      -- List all available tools
-/permission -- Set permission mode (permissive/ask/strict)
-/history    -- Show recent conversation
-/remember   -- Store a note in long-term memory
-/memory     -- View/search/manage memories
-/forget     -- Remove a memory entry
-/help       -- Show all commands
-```
+---
 
 ## Persistent Memory
 
-SQLite-backed long-term memory that survives across sessions (inspired by
-[claude-mem](https://github.com/thedotmack/claude-mem)):
+SQLite + FTS5 long-term memory that survives USB ejects and reboots (inspired by [claude-mem](https://github.com/thedotmack/claude-mem)):
 
-- **7 observation types**: fact, discovery, decision, bugfix, note, preference, summary
-- **8 concept tags**: how-it-works, problem-solution, gotcha, pattern, trade-off, etc.
+- **7 observation types** — fact, discovery, decision, bugfix, note, preference, summary
+- **8 concept tags** — how-it-works, problem-solution, gotcha, pattern, trade-off, etc.
 - **FTS5 full-text search** with LIKE fallback
-- **SHA-256 content-hash deduplication** (30s window)
-- **Structured session summaries**: request, investigated, learned, completed, next_steps
-- **Privacy tags**: `<private>...</private>` stripped before storage
-- **Relevance decay**: older unused memories fade, frequently accessed ones persist
-- **Progressive context injection**: facts, project context, session summaries,
-  discoveries, notes, and query-relevant hits injected into system prompt
-- **Per-project tracking**: working dir, tech stack, recent files
-- **Export/import**: JSON backup with v1 backward-compatible import
+- **SHA-256 deduplication** — 30-second window prevents duplicate writes
+- **Relevance decay** — stale memories fade; frequently accessed ones persist
+- **Context injection** — relevant memories injected into system prompt automatically
+- **Privacy tags** — `<private>...</private>` stripped before storage
+- **Export/import** — JSON backup with v1 backward-compatible import
 
-The agent proactively stores observations via `memory_store` tool and retrieves
-context via `memory_search`. Memory is auto-saved on shutdown with session summary.
+---
+
+## Web UI
+
+Chat interface at `http://localhost:8080`:
+
+- **Sidebar panels** — Chat, Memory, Tools, Settings, Logs (all collapsible)
+- **Real-time streaming** — SSE with collapsible tool execution cards
+- **Memory browser** — search, view, and manage stored memories
+- **Settings panel** — live mode switching, provider list, model inventory
+- **Dark / light theme** — toggle with `Ctrl+K` to focus input
+- **Markdown rendering** — code blocks, headings, lists, links
+
+Embedded SPA (vanilla HTML/CSS/JS) — no build step, no node_modules. Inspired by [Skales](https://github.com/skalesapp/skales).
+
+---
 
 ## MCP Integration
 
-Connect to external MCP (Model Context Protocol) servers for additional tools:
+Connect external MCP servers for additional tools:
 
 ```json
-// In config/settings.json
 {
   "mcp": {
     "servers": {
@@ -263,7 +323,7 @@ Connect to external MCP (Model Context Protocol) servers for additional tools:
         "transport": "stdio",
         "command": "uvx",
         "args": ["mcp-server-github"],
-        "env": {"GITHUB_TOKEN": "$GITHUB_TOKEN"}
+        "env": { "GITHUB_TOKEN": "$GITHUB_TOKEN" }
       },
       "web-search": {
         "transport": "sse",
@@ -274,60 +334,56 @@ Connect to external MCP (Model Context Protocol) servers for additional tools:
 }
 ```
 
-- **Transports**: stdio (subprocess), HTTP, SSE
-- **Auto-discovery**: tools/list on connect, registered as `mcp__{server}__{tool}`
-- **JSON-RPC**: Full protocol with initialize handshake, tool calls, retries
-- **Thread-safe registry**: concurrent access from agent + UI threads
-- **Env var resolution**: `$VAR` references expanded from environment
+- **Transports** — stdio (subprocess), HTTP, SSE
+- **Auto-discovery** — tools registered as `mcp__{server}__{tool}`
+- **Thread-safe registry** — concurrent access from agent and UI threads
+- **Env var resolution** — `$VAR` references expanded at connect time
+
+---
 
 ## Plugin System
 
-Extensible plugin architecture with manifest-based tools and hooks:
+Extend carry-ai with manifest-based plugins:
 
 ```json
-// plugins/my-plugin/plugin.json
 {
   "name": "my-plugin",
   "version": "1.0.0",
-  "description": "Does something useful",
   "permissions": ["read", "write"],
-  "tools": [{"name": "greet", "description": "Say hello", "command": "./greet.py"}],
-  "hooks": {"pre_tool_use": ["./hooks/safety_check.py"]},
-  "lifecycle": {"init": ["./setup.py"], "shutdown": ["./cleanup.py"]}
+  "tools": [{ "name": "greet", "description": "Say hello", "command": "./greet.py" }],
+  "hooks": { "pre_tool_use": ["./hooks/safety_check.py"] },
+  "lifecycle": { "init": ["./setup.py"], "shutdown": ["./cleanup.py"] }
 }
 ```
 
-- **7 hook types**: pre_tool_use, post_tool_use, post_tool_use_failure,
-  pre_chat, post_chat, on_startup, on_shutdown
-- **Plugin manager**: install, enable, disable, uninstall with persistent state
-- **Permission model**: read, write, execute, network, clipboard
-- **Discovery**: scans bundled + user-installed directories
-- **Tool registration**: plugin tools available as `plugin__{name}__{tool}`
+7 hook types: `pre_tool_use`, `post_tool_use`, `post_tool_use_failure`, `pre_chat`, `post_chat`, `on_startup`, `on_shutdown`. Plugin tools registered as `plugin__{name}__{tool}`.
+
+---
 
 ## Cowork Features
 
-### Session Sharing
-- **JSON export**: sanitized (API keys stripped, paths relativized, system messages removed)
-- **Markdown export**: human-readable chat transcript
-- **Live sharing**: temporary localhost URL for LAN viewing
-- **Import**: round-trip fidelity from JSON exports
+**Session Sharing**
+- JSON export (sanitized — API keys stripped, paths relativized)
+- Markdown export — human-readable chat transcript
+- Live sharing — temporary localhost URL for LAN access
 
-### Team Management
-- Create teams with named members
-- Task tracking: pending, in_progress, completed, blocked (with priority)
-- Simple cron scheduler: hourly, daily, weekly recurring prompts
-- All data persisted to USB in config/teams.json
+**Team Management**
+- Named teams with member lists
+- Task tracking: pending / in_progress / completed / blocked (with priority)
+- Cron scheduler: hourly / daily / weekly recurring prompts
+- Persisted to `config/teams.json` on USB
+
+---
 
 ## Configuration
 
-Hierarchical config from 4 sources (later overrides earlier):
+Four-layer hierarchy (later overrides earlier):
 
 1. Built-in defaults
 2. `config/settings.json` on USB
-3. Environment variables (`CARRY_AI_MODE`, `CARRY_AI_PORT`, etc.)
+3. Environment variables (`CARRY_AI_MODE`, `CARRY_AI_PORT`, `CARRY_AI_GPU_LAYERS`, etc.)
 4. CLI flags (`--mode`, `--port`, etc.)
 
-Dot-access settings object with validation:
 ```python
 from config.settings import load_settings
 settings = load_settings(cli_overrides={"mode": "api", "port": 9090})
@@ -335,135 +391,125 @@ print(settings.agent.permission_mode)  # "ask"
 print(settings.ui.theme)              # "dark"
 ```
 
-## Web UI
+See [`docs/configuration.md`](docs/configuration.md) for the full settings reference.
 
-Chat interface at `http://localhost:8080` inspired by [Skales](https://github.com/skalesapp/skales):
+---
 
-- **Sidebar navigation**: Chat, Memory, Tools, Settings, Logs panels (collapsible)
-- **Real-time streaming**: SSE with collapsible tool execution cards
-- **Memory browser**: search, view, and manage persistent memories
-- **Tools panel**: categorized tool registry with descriptions and parameters
-- **Settings panel**: live mode switching, provider list, model inventory
-- **Activity log**: timestamped event log for debugging
-- **Dark/light theme** with keyboard shortcut (Ctrl+K to focus input)
-- **Enhanced markdown**: code blocks with language labels, headings, lists, links
-- Memory API (`/api/memory`, `/api/memory/search`, `/api/memory/add`)
-- Status monitoring (`/api/status`, `/api/tools`, `/api/models`)
+## Security & Cleanup
 
-Embedded single-page app (vanilla HTML/CSS/JS) -- no build step, no node_modules.
-UI architecture inspired by Skales' app-shell + sidebar pattern.
+**Encryption** — API keys stored in `config/providers.enc` (Fernet AES-128-CBC + HMAC-SHA256, PBKDF2 600k iterations). Decrypted in RAM only. Never touch disk on the host machine.
+
+**Injection** — session runs in tmpfs (`/tmp/ai_session/` on Linux) or `%TEMP%\ai_session\` on Windows. Nothing is permanently installed.
+
+**Eject watcher** — WMI event-driven (Windows) or udev rule (Linux). On eject, a 6-step nuclear wipe fires automatically:
+
+1. Kill process tree (psutil / taskkill / pkill)
+2. Wipe session directory (tmpfs umount / shutil.rmtree)
+3. Clear clipboard (ctypes / xclip / xsel / wl-copy)
+4. Scrub recent files (recently-used.xbel, shell history)
+5. Remove eject watchers (WMI watcher / udev rule)
+6. Zero sensitive memory (ctypes.memset on key bytes)
+
+---
 
 ## Packaging to USB
 
 ```bash
-python package.py --target E:\                    # Package to USB drive
-python package.py --target ./test --verbose        # Test locally
-python package.py --target E:\ --include-models    # Bundle GGUF models too
-python package.py --target E:\ --strip-models      # API-only package
-python package.py --validate-only --target .        # Check components only
+python package.py --target E:\                   # Package to USB drive
+python package.py --target ./test --verbose       # Test locally
+python package.py --target E:\ --include-models   # Bundle GGUF models
+python package.py --target E:\ --strip-models     # API-only package
+python package.py --validate-only --target .       # Validate only
 ```
 
 Generated launchers: `autorun.inf`, `start.bat`, `start.sh`, `carry-ai.desktop`
 
-## Cleanup (Nuclear Wipe)
-
-6-step trace removal on USB eject:
-
-1. **Kill processes**: psutil tree kill (children first) or taskkill/pkill fallback
-2. **Wipe session directory**: tmpfs umount on Linux, shutil.rmtree on Windows
-3. **Clear clipboard**: ctypes EmptyClipboard / xclip / xsel / wl-copy
-4. **Scrub recent files**: recently-used.xbel, shell history entries
-5. **Remove eject watchers**: WMI watcher / udev rule
-6. **Zero sensitive memory**: ctypes.memset on CPython string/bytes internals
+---
 
 ## Project Structure
 
 ```
 carry-ai/
-  launcher.py                # Entry point: OS detect, RAM probe, boot sequence
-  package.py                 # USB packaging: validate, copy, generate launchers
-  requirements.txt           # Python dependencies
+├── launcher.py              # Entry point: OS detect, RAM probe, boot
+├── onboard.py               # Interactive setup wizard (run this first)
+├── package.py               # USB packaging
+├── requirements.txt
 
-  modes/
-    local_mode.py            # llama.cpp subprocess, 12-tier model auto-selector
-    api_mode.py              # Provider router with failover + health tracking
+├── docs/
+│   ├── getting-started.md   # Zero-to-running guide
+│   ├── configuration.md     # Full settings.json reference
+│   ├── providers.md         # API key setup for all 9 providers
+│   └── architecture.md      # System design & data-flow diagrams
 
-  providers/
-    base.py                  # ABC, exception hierarchy, ChatResponse dataclass
-    openai_compat.py         # Shared OpenAI-compatible base (chat + SSE stream)
-    anthropic_provider.py    # Anthropic Messages API (content blocks format)
-    google_oauth.py          # Gemini generateContent API (parts format)
-    openai_provider.py       # OpenAI GPT models
-    groq_provider.py         # Groq (OpenAI-compatible, fast inference)
-    openrouter_provider.py   # OpenRouter (multi-provider aggregator)
-    godmode_provider.py      # G0DM0D3 multi-model racing + AutoTune
-    onyx_provider.py         # Onyx RAG-enhanced provider (50+ connectors)
+├── modes/
+│   ├── api_mode.py          # Cloud provider router + health tracking
+│   └── local_mode.py        # llama.cpp subprocess + 12-tier model selection
 
-  agent/
-    agent.py                 # ReAct loop, conversation history, permissions
-    tools.py                 # 14 built-in tools + extensible registry
-    memory.py                # SQLite + FTS5 persistent memory (v2)
+├── providers/               # 7 LLM provider integrations
+│   ├── base.py              # Abstract base + exception hierarchy
+│   ├── openai_compat.py     # Shared OpenAI-compatible base
+│   ├── anthropic_provider.py
+│   ├── google_oauth.py
+│   ├── openai_provider.py
+│   ├── groq_provider.py
+│   ├── openrouter_provider.py
+│   ├── godmode_provider.py  # G0DM0D3 multi-model racing
+│   └── onyx_provider.py     # RAG provider
 
-  inject/
-    inject_windows.py        # %TEMP% session, WMI/ctypes eject watcher
-    inject_linux.sh          # tmpfs mount, udev rule, cleanup on eject
+├── agent/
+│   ├── agent.py             # ReAct loop, permissions, conversation history
+│   ├── tools.py             # 30+ tools + extensible registry
+│   └── memory.py            # SQLite + FTS5 persistent memory
 
-  cleanup/
-    cleanup.py               # 6-step nuclear wipe on eject
+├── ui/
+│   └── app.py               # Flask SPA at localhost:8080
 
-  ui/
-    app.py                   # Flask web UI (embedded SPA, 12 API routes)
+├── integrations/
+│   ├── voice_tools.py       # Push-to-talk voice pipeline (clicky port)
+│   ├── scrapling_tools.py   # Adaptive web scraping
+│   ├── gworkspace_tools.py  # Google Workspace API
+│   └── llmfit_advisor.py    # Hardware-aware model selection
 
-  models/
-    downloader.py            # HuggingFace GGUF browser/downloader
-
-  mcp/
-    client.py                # MCP client: stdio + HTTP transports, McpManager
-    registry.py              # Thread-safe global MCP tool registry
-    config.py                # MCP server config loader + env var resolution
-
-  plugins/
-    loader.py                # Plugin discovery, manifest parsing, hook registry
-    manager.py               # Install/enable/disable/uninstall + state persistence
-
-  cowork/
-    session_sharing.py       # Session export (JSON/Markdown), sharing, import
-    teams.py                 # Team management, task tracking, cron scheduler
-
-  integrations/
-    scrapling_tools.py       # Scrapling web scraping tools (D4Vinci/Scrapling)
-    gworkspace_tools.py      # Google Workspace CLI tools (googleworkspace/cli)
-    llmfit_advisor.py        # Hardware-aware model selection (AlexsJones/llmfit)
-
-  config/
-    providers.enc            # Encrypted API keys (Fernet)
-    settings.py              # Hierarchical config: defaults + JSON + env + CLI
-
-  crypto/
-    keystore.py              # Fernet encryption, PBKDF2 key derivation, secure wipe
+├── mcp/                     # MCP client (stdio/HTTP/SSE)
+├── plugins/                 # Plugin loader + manager
+├── cowork/                  # Session sharing + team management
+├── inject/                  # OS injection (Windows + Linux)
+├── cleanup/                 # 6-step trace wiper
+├── models/                  # HuggingFace GGUF downloader
+├── crypto/                  # Fernet keystore
+└── config/                  # Settings loader + encrypted keys
 ```
+
+---
 
 ## Referenced Projects
 
-carry-ai integrates ideas and tools from these open-source projects:
-
 | Project | How It's Used | Module |
 |---------|---------------|--------|
-| [claude-mem](https://github.com/thedotmack/claude-mem) | Memory architecture: FTS5, dedup, decay | `agent/memory.py` |
-| [Skales](https://github.com/skalesapp/skales) | UI design: sidebar, panels, tool cards | `ui/app.py` |
-| [Scrapling](https://github.com/D4Vinci/Scrapling) | Adaptive web scraping with anti-bot bypass | `integrations/scrapling_tools.py` |
-| [G0DM0D3](https://github.com/elder-plinius/G0DM0D3) | Multi-model racing, AutoTune, synthesis | `providers/godmode_provider.py` |
-| [Onyx](https://github.com/onyx-dot-app/onyx) | RAG provider with 50+ data connectors | `providers/onyx_provider.py` |
-| [Google Workspace CLI](https://github.com/googleworkspace/cli) | Drive, Gmail, Sheets, Calendar tools | `integrations/gworkspace_tools.py` |
-| [llmfit](https://github.com/AlexsJones/llmfit) | Hardware-aware model selection scoring | `integrations/llmfit_advisor.py` |
 | [clicky](https://github.com/farzaa/clicky) | Push-to-talk voice pipeline (Python port) | `integrations/voice_tools.py` |
+| [claude-mem](https://github.com/thedotmack/claude-mem) | Memory: FTS5, dedup, decay | `agent/memory.py` |
+| [Scrapling](https://github.com/D4Vinci/Scrapling) | Adaptive web scraping + anti-bot bypass | `integrations/scrapling_tools.py` |
+| [G0DM0D3](https://github.com/elder-plinius/G0DM0D3) | Multi-model racing, AutoTune, synthesis | `providers/godmode_provider.py` |
+| [Onyx](https://github.com/onyx-dot-app/onyx) | RAG with 50+ data connectors | `providers/onyx_provider.py` |
+| [llmfit](https://github.com/AlexsJones/llmfit) | Hardware-aware model selection | `integrations/llmfit_advisor.py` |
+| [Google Workspace CLI](https://github.com/googleworkspace/cli) | Drive, Gmail, Sheets, Calendar | `integrations/gworkspace_tools.py` |
+| [Skales](https://github.com/skalesapp/skales) | Web UI sidebar design | `ui/app.py` |
+
+---
 
 ## Requirements
 
 - Python 3.10+
-- For local mode: llama-server binary (from [llama.cpp](https://github.com/ggerganov/llama.cpp)) + GGUF model
+- For local mode: [llama-server](https://github.com/ggerganov/llama.cpp) binary + a GGUF model file
 - For API mode: at least one provider API key
-- See `requirements.txt` for Python packages
+- For voice mode: `pip install pyaudio assemblyai elevenlabs Pillow`
+
+```bash
+pip install -r requirements.txt        # Full install
+pip install psutil cryptography flask requests  # Minimal (API mode only)
+```
+
+---
 
 ## License
 
