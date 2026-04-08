@@ -242,32 +242,11 @@ def select_mode(available_ram_gb: float, available_models: list[Path],
         log.info("Auto-selected mode: api (API keys available, no local models)")
         return "api"
     else:
-        return _interactive_mode_select()
-
-
-def _interactive_mode_select() -> str:
-    """Prompt the user to choose a mode when auto-detect can't decide."""
-    print("\n  No local models or API keys detected.\n")
-    print("  [1] Local mode  — download a model from HuggingFace first")
-    print("  [2] API mode    — enter API keys now")
-    print("  [3] Quit")
-    print()
-
-    while True:
-        try:
-            choice = input("  Select [1/2/3]: ").strip()
-        except (EOFError, KeyboardInterrupt):
-            print()
-            sys.exit(0)
-
-        if choice == "1":
-            print("\n  Run: python launcher.py --download-model\n")
-            sys.exit(0)
-        elif choice == "2":
-            print("\n  Run: python -c \"from crypto.keystore import KeyStore; KeyStore.setup()\"\n")
-            sys.exit(0)
-        elif choice == "3":
-            sys.exit(0)
+        # Nothing configured yet — start in API mode so the web UI launches.
+        # The user can enter an API key or download a model from the browser UI.
+        print("  No local models or API keys found.")
+        print("  Starting in API mode — configure your provider in the web UI.")
+        return "api"
 
 
 # ===================================================================

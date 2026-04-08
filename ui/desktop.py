@@ -1153,52 +1153,73 @@ class ModelManagerWindow:
 
     def _download_worker(self, model: dict):
         """Download a model in a background thread, updating progress."""
+        import time as _time
         from urllib.request import urlopen, Request
         from urllib.error import URLError, HTTPError
 
         dest = self._models_dir / model["hf_file"]
         url = f"https://huggingface.co/{model['hf_repo']}/resolve/main/{model['hf_file']}"
 
-        try:
-            headers = {"User-Agent": "carry-ai/desktop"}
-            if self._hf_token:
-                headers["Authorization"] = f"Bearer {self._hf_token}"
-            req = Request(url, headers=headers)
-            with urlopen(req, timeout=600) as resp:
-                total = int(resp.headers.get("Content-Length", 0))
-                written = 0
-                with open(dest, "wb") as f:
-                    while True:
-                        if self._cancel.is_set():
-                            f.close()
-                            dest.unlink(missing_ok=True)
-                            self._dl_result = ("cancelled", "Download cancelled.")
-                            return
-                        chunk = resp.read(65536)
-                        if not chunk:
-                            break
-                        f.write(chunk)
-                        written += len(chunk)
-                        if total:
-                            self._dl_progress = written * 100.0 / total
-                            self._dl_status = (
-                                f"{model['name']}: "
-                                f"{written / 1_048_576:.0f} / {total / 1_048_576:.0f} MB "
-                                f"({self._dl_progress:.0f}%)"
-                            )
-            self._dl_result = ("ok", f"{model['name']} downloaded successfully!")
-        except HTTPError as e:
-            dest.unlink(missing_ok=True)
-            if e.code == 401:
-                self._dl_result = ("error",
-                    f"401 Unauthorized — accept the license at "
-                    f"https://huggingface.co/{model['hf_repo'].split('/')[0]} "
-                    f"and check your HF token.")
-            else:
-                self._dl_result = ("error", f"HTTP {e.code}: {e.reason}")
-        except (URLError, OSError) as e:
-            dest.unlink(missing_ok=True)
-            self._dl_result = ("error", str(e))
+        def _attempt(retry: bool = False) -> bool:
+            """Try one download attempt. Returns True on success."""
+            try:
+                headers = {"User-Agent": "carry-ai/desktop"}
+                if self._hf_token:
+                    headers["Authorization"] = f"Bearer {self._hf_token}"
+                req = Request(url, headers=headers)
+                with urlopen(req, timeout=600) as resp:
+                    total = int(resp.headers.get("Content-Length", 0))
+                    written = 0
+                    with open(dest, "wb") as f:
+                        while True:
+                            if self._cancel.is_set():
+                                f.close()
+                                dest.unlink(missing_ok=True)
+                                self._dl_result = ("cancelled", "Download cancelled.")
+                                return True  # stop retrying
+                            chunk = resp.read(65536)
+                            if not chunk:
+                                break
+                            f.write(chunk)
+                            written += len(chunk)
+                            if total:
+                                self._dl_progress = written * 100.0 / total
+                                self._dl_status = (
+                                    f"{model['name']}: "
+                                    f"{written / 1_048_576:.0f} / {total / 1_048_576:.0f} MB "
+                                    f"({self._dl_progress:.0f}%)"
+                                )
+                self._dl_result = ("ok", f"{model['name']} downloaded successfully!")
+                return True
+            except HTTPError as e:
+                dest.unlink(missing_ok=True)
+                if e.code == 401:
+                    self._dl_result = ("error",
+                        f"401 Unauthorized.\n"
+                        f"For '{model['name']}' you need a HuggingFace token.\n"
+                        f"  1. Go to huggingface.co/settings/tokens and create a token\n"
+                        f"  2. Accept the model license at huggingface.co/{model['hf_repo']}\n"
+                        f"  3. Paste your token in the HF Token field above")
+                    return True  # no point retrying auth errors
+                elif e.code in (500, 502, 503, 504) and not retry:
+                    # Transient server error — wait and retry once
+                    self._dl_status = f"Server error ({e.code}), retrying in 5 s..."
+                    _time.sleep(5)
+                    return False  # signal caller to retry
+                else:
+                    self._dl_result = ("error",
+                        f"HTTP {e.code}: {e.reason}\n"
+                        f"URL: {url}\n"
+                        f"Try opening that URL in your browser to verify the file exists.")
+                    return True
+            except (URLError, OSError) as e:
+                dest.unlink(missing_ok=True)
+                self._dl_result = ("error", f"Download failed: {e}\nURL: {url}")
+                return True
+
+        done = _attempt(retry=False)
+        if not done:
+            _attempt(retry=True)
 
     _dl_progress = 0.0
     _dl_status = ""

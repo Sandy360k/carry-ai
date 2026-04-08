@@ -2,9 +2,9 @@
 :: ============================================================
 :: carry-ai — Windows Launcher
 :: ============================================================
-:: Tries the desktop chat app first. If tkinter is missing
-:: (common with portable Python), falls back to the web UI
-:: which auto-opens in your browser.
+:: Tries the native desktop app first.  If tkinter is unavailable
+:: (common with portable Python), falls back to the Flask web UI
+:: which auto-opens in your default browser.
 :: ============================================================
 SETLOCAL EnableDelayedExpansion
 
@@ -19,7 +19,7 @@ SET "LAUNCHER=%USB_ROOT%\carry-ai\launcher.py"
 SET "PY="
 IF EXIST "%USB_PYTHON%" (
     SET "PY=%USB_PYTHON%"
-    ECHO [carry-ai] USB Python: %USB_PYTHON%
+    ECHO [carry-ai] Using bundled Python: %USB_PYTHON%
 ) ELSE (
     WHERE python >nul 2>&1
     IF !ERRORLEVEL! EQU 0 (
@@ -33,23 +33,28 @@ IF EXIST "%USB_PYTHON%" (
 IF "%PY%"=="" (
     ECHO.
     ECHO  [carry-ai] ERROR: Python not found.
-    ECHO  Run setup_usb.py to bundle Python, or install from https://python.org
+    ECHO  Run setup_usb.py to bundle Python onto the USB,
+    ECHO  or install Python from https://python.org
     ECHO.
     PAUSE
     GOTO :EOF
 )
 
-:: ---- Try desktop app first ----
+:: ---- Try desktop app (requires tkinter) ----
 IF EXIST "%DESKTOP%" (
-    ECHO [carry-ai] Trying desktop app...
-    "%PY%" "%DESKTOP%" 2>nul
-    IF !ERRORLEVEL! EQU 0 GOTO :EOF
-    ECHO [carry-ai] Desktop app failed (tkinter not available in portable Python).
+    ECHO [carry-ai] Starting desktop app...
+    "%PY%" "%DESKTOP%" %*
+    SET "_ERR=!ERRORLEVEL!"
+    :: Exit code 0 = normal close, -1 = user closed window (also normal)
+    IF !_ERR! EQU 0 GOTO :EOF
+    IF !_ERR! EQU 255 GOTO :EOF
+    :: Any other non-zero = startup failure (missing tkinter, import error, etc.)
+    ECHO [carry-ai] Desktop app unavailable (exit code !_ERR!).
     ECHO [carry-ai] Launching web UI instead — your browser will open automatically.
     ECHO.
 )
 
-:: ---- Fall back to web UI (auto-opens browser) ----
+:: ---- Fall back to web UI (launcher auto-opens browser) ----
 IF EXIST "%BOOTSTRAP%" (
     "%PY%" "%BOOTSTRAP%" %*
 ) ELSE IF EXIST "%LAUNCHER%" (
