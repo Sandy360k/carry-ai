@@ -46,23 +46,44 @@ A portable AI assistant that lives on a USB drive. Plug it into any Windows or L
 
 ## Quick Start
 
-**New to carry-ai? Run the onboarding wizard:**
+### Option 1 — Flash a USB drive (recommended)
+
+Run this on any machine that has Python installed:
 
 ```bash
-python onboard.py
+python flash_usb.py
 ```
 
-The wizard handles everything: system check → dependency install → mode selection → API keys → voice setup → config generation → dry-run validation → launch command.
+**Works like Rufus.** Detects your USB drives, you pick one, and it:
+- Copies carry-ai onto the USB
+- Downloads and installs all Python packages *onto the USB* (no pip install needed on target machines)
+- Bundles a portable Python interpreter for Windows hosts (no Python needed at all)
+- Optionally downloads GGUF models and voice pipeline deps onto the USB
 
-**Or jump straight in:**
+After flashing, the USB is fully self-contained:
+
+```
+Windows host  →  insert USB, double-click start.bat   (no Python required)
+Linux host    →  insert USB, bash /media/usb/start.sh  (only needs Python 3.10+)
+```
+
+---
+
+### Option 2 — Set up an existing USB (already has carry-ai)
+
+If carry-ai is already on the USB and you want to bundle dependencies:
 
 ```bash
-# Windows
-python carry-ai/launcher.py
+python setup_usb.py
+```
 
-# Linux
-python3 carry-ai/launcher.py
-# or: bash start.sh
+---
+
+### Option 3 — Manual / dev mode
+
+```bash
+python onboard.py      # interactive wizard: deps, keys, mode, voice, dry-run
+python launcher.py     # direct launch (uses system Python packages)
 ```
 
 **Launcher flags:**
@@ -79,7 +100,7 @@ python launcher.py --no-ui           # Headless CLI, no web server
 python launcher.py --verbose         # Debug logging
 ```
 
-See [`docs/getting-started.md`](docs/getting-started.md) for the full manual setup guide.
+See [`docs/getting-started.md`](docs/getting-started.md) for the full setup guide.
 
 ---
 
@@ -109,6 +130,43 @@ Mode is auto-detected from what's available, or forced with `--mode`.
 - **Encrypted keys** — Fernet + PBKDF2 (600k iterations), decrypted in RAM only
 - **Nuclear cleanup** — 6-step trace wipe on USB eject (processes, tmpfs, clipboard, history)
 - **Web UI** — Flask SPA at `localhost:8080`, dark/light theme, real-time streaming
+
+---
+
+## USB Self-Hosting
+
+The USB drive is not just storage — it hosts its own runtime.
+
+```
+USB:/
+├── carry-ai/              ← source code
+├── python-env/
+│   ├── windows/           ← portable Python interpreter + all packages
+│   │   ├── python.exe     ← no install needed on Windows host
+│   │   └── Lib/site-packages/
+│   └── linux/
+│       └── site-packages/ ← all packages, injected via PYTHONPATH
+├── models/                ← GGUF model files
+├── start.bat              ← Windows entry point
+└── start.sh               ← Linux entry point
+```
+
+**How it works on each platform:**
+
+| Platform | Python source | Package source | Requirement on host |
+|----------|--------------|----------------|---------------------|
+| Windows | `python-env/windows/python.exe` (bundled) | `python-env/windows/Lib/site-packages/` | Nothing |
+| Linux | System `python3` | `python-env/linux/site-packages/` via `PYTHONPATH` | Python 3.10+ |
+
+`start.sh` automatically sets `PYTHONPATH` before launching, so the host machine's site-packages are never touched. `start.bat` calls the bundled `python.exe` directly.
+
+**Scripts:**
+
+| Script | Purpose |
+|--------|---------|
+| `flash_usb.py` | Run on host — detects drives, copies carry-ai, downloads packages + models |
+| `setup_usb.py` | Run from USB — sets up / updates the `python-env/` on an existing USB |
+| `bootstrap.py` | Called by start scripts — injects USB packages into `sys.path` |
 
 ---
 
@@ -431,7 +489,12 @@ Generated launchers: `autorun.inf`, `start.bat`, `start.sh`, `carry-ai.desktop`
 ```
 carry-ai/
 ├── launcher.py              # Entry point: OS detect, RAM probe, boot
-├── onboard.py               # Interactive setup wizard (run this first)
+├── onboard.py               # Interactive setup wizard
+├── flash_usb.py             # Rufus-style USB flasher (run on host machine)
+├── setup_usb.py             # USB package env setup (run from USB)
+├── bootstrap.py             # sys.path patcher — injects USB packages
+├── start.bat                # Windows launcher (uses USB-local Python)
+├── start.sh                 # Linux launcher (injects USB PYTHONPATH)
 ├── package.py               # USB packaging
 ├── requirements.txt
 
