@@ -82,6 +82,7 @@ GET_PIP_URL = "https://bootstrap.pypa.io/get-pip.py"
 # model is selected.  Get a token at: https://huggingface.co/settings/tokens
 # and accept the model license on its HuggingFace page first.
 GGUF_MODELS = [
+    # ── Tiny / emergency (≤2 GB RAM) ──────────────────────────────────────
     {
         "name": "Qwen2.5 1.5B Q4_K_M",
         "ram_gb": 2, "size_gb": 1.1,
@@ -98,6 +99,7 @@ GGUF_MODELS = [
         "hf_file": "gemma-3-1b-it-Q4_K_M.gguf",
         "gated": True,
     },
+    # ── 3–4 GB RAM ──────────────────────────────────────────────────────────
     {
         "name": "Qwen2.5 3B Q4_K_M",
         "ram_gb": 4, "size_gb": 2.0,
@@ -107,11 +109,28 @@ GGUF_MODELS = [
         "gated": False,
     },
     {
+        "name": "Phi-3.5 Mini Q4_K_M",
+        "ram_gb": 4, "size_gb": 2.2,
+        "description": "Microsoft Phi-3.5, great reasoning, 4 GB RAM",
+        "hf_repo": "bartowski/Phi-3.5-mini-instruct-GGUF",
+        "hf_file": "Phi-3.5-mini-instruct-Q4_K_M.gguf",
+        "gated": False,
+    },
+    # ── 5–6 GB RAM ──────────────────────────────────────────────────────────
+    {
         "name": "Phi-4-mini Q4_K_M",
         "ram_gb": 5, "size_gb": 2.4,
         "description": "Strong reasoning + tool calling, 5 GB RAM",
         "hf_repo": "bartowski/Phi-4-mini-instruct-GGUF",
         "hf_file": "Phi-4-mini-instruct-Q4_K_M.gguf",
+        "gated": False,
+    },
+    {
+        "name": "Mistral 7B v0.3 Q4_K_M",
+        "ram_gb": 6, "size_gb": 4.4,
+        "description": "Mistral's classic 7B — fast, reliable, 6 GB RAM",
+        "hf_repo": "bartowski/Mistral-7B-Instruct-v0.3-GGUF",
+        "hf_file": "Mistral-7B-Instruct-v0.3-Q4_K_M.gguf",
         "gated": False,
     },
     {
@@ -130,6 +149,25 @@ GGUF_MODELS = [
         "hf_file": "qwen2.5-7b-instruct-q4_k_m.gguf",
         "gated": False,
     },
+    # ── 8–10 GB RAM ─────────────────────────────────────────────────────────
+    {
+        "name": "Llama 3.1 8B Q4_K_M",
+        "ram_gb": 8, "size_gb": 4.9,
+        "description": "Meta Llama 3.1 — excellent general purpose [needs HF token]",
+        "hf_repo": "bartowski/Meta-Llama-3.1-8B-Instruct-GGUF",
+        "hf_file": "Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf",
+        "gated": True,
+        "license_url": "https://huggingface.co/meta-llama/Meta-Llama-3.1-8B-Instruct",
+        "license_note": "Accept Meta license at meta-llama/Meta-Llama-3.1-8B-Instruct",
+    },
+    {
+        "name": "DeepSeek-R1 7B Q4_K_M",
+        "ram_gb": 8, "size_gb": 4.7,
+        "description": "DeepSeek reasoning model, great for code+math, 8 GB RAM",
+        "hf_repo": "bartowski/DeepSeek-R1-Distill-Qwen-7B-GGUF",
+        "hf_file": "DeepSeek-R1-Distill-Qwen-7B-Q4_K_M.gguf",
+        "gated": False,
+    },
     {
         "name": "Qwen2.5 7B Q8_0",
         "ram_gb": 10, "size_gb": 8.1,
@@ -138,6 +176,7 @@ GGUF_MODELS = [
         "hf_file": "qwen2.5-7b-instruct-q8_0.gguf",
         "gated": False,
     },
+    # ── 12+ GB RAM ──────────────────────────────────────────────────────────
     {
         "name": "Qwen2.5 14B Q4_K_M",
         "ram_gb": 12, "size_gb": 9.0,
@@ -146,7 +185,52 @@ GGUF_MODELS = [
         "hf_file": "qwen2.5-14b-instruct-q4_k_m.gguf",
         "gated": False,
     },
+    {
+        "name": "Mistral Nemo 12B Q4_K_M",
+        "ram_gb": 12, "size_gb": 7.1,
+        "description": "Mistral + Nvidia 12B — multilingual, long context, 12 GB RAM",
+        "hf_repo": "bartowski/Mistral-Nemo-Instruct-2407-GGUF",
+        "hf_file": "Mistral-Nemo-Instruct-2407-Q4_K_M.gguf",
+        "gated": False,
+    },
+    # ── Coding specialist ───────────────────────────────────────────────────
+    {
+        "name": "DeepSeek-Coder-V2 Lite Q4_K_M",
+        "ram_gb": 12, "size_gb": 9.7,
+        "description": "Best open-source coding model, 12 GB RAM",
+        "hf_repo": "bartowski/DeepSeek-Coder-V2-Lite-Instruct-GGUF",
+        "hf_file": "DeepSeek-Coder-V2-Lite-Instruct-Q4_K_M.gguf",
+        "gated": False,
+    },
 ]
+
+# ---------------------------------------------------------------------------
+# LocalAI binary catalogue
+# ---------------------------------------------------------------------------
+LOCALAI_VERSION = "v2.25.0"
+LOCALAI_BINARIES = {
+    "linux_x86_64": {
+        "url": (f"https://github.com/mudler/LocalAI/releases/download/"
+                f"{LOCALAI_VERSION}/local-ai-Linux-x86_64"),
+        "filename": "local-ai",
+        "size_mb": 300,
+        "description": "Linux x86_64 (most desktops/servers)",
+    },
+    "linux_arm64": {
+        "url": (f"https://github.com/mudler/LocalAI/releases/download/"
+                f"{LOCALAI_VERSION}/local-ai-Linux-arm64"),
+        "filename": "local-ai",
+        "size_mb": 280,
+        "description": "Linux ARM64 (Raspberry Pi 5, Jetson, etc.)",
+    },
+    "windows_x86_64": {
+        "url": (f"https://github.com/mudler/LocalAI/releases/download/"
+                f"{LOCALAI_VERSION}/local-ai-Windows-x86_64.exe"),
+        "filename": "local-ai.exe",
+        "size_mb": 310,
+        "description": "Windows 10/11 x86_64",
+    },
+}
 
 # ---------------------------------------------------------------------------
 # Package groups
@@ -489,6 +573,57 @@ def setup_portable_python_windows(win_env_dir: Path) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# LocalAI binary download
+# ---------------------------------------------------------------------------
+
+def download_localai_binary(usb_root: Path) -> bool:
+    """
+    Download the LocalAI binary for the current OS and place it in USB/bin/.
+
+    The binary is placed at:
+        Windows → USB/bin/local-ai.exe
+        Linux   → USB/bin/local-ai  (chmod +x)
+
+    Returns True on success.
+    """
+    import platform as _platform
+    os_name = _platform.system().lower()
+    arch = _platform.machine().lower()
+
+    if os_name == "windows":
+        key = "windows_x86_64"
+    elif os_name == "linux" and "arm" in arch or "aarch" in arch:
+        key = "linux_arm64"
+    else:
+        key = "linux_x86_64"
+
+    info = LOCALAI_BINARIES.get(key)
+    if not info:
+        console.print(f"  [yellow]![/yellow] No LocalAI binary for {os_name}/{arch}")
+        return False
+
+    bin_dir = usb_root / "bin"
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    dest = bin_dir / info["filename"]
+
+    if dest.exists():
+        console.print(f"  [green]✓[/green] LocalAI already present: {dest}")
+        return True
+
+    console.print(f"  Downloading LocalAI {LOCALAI_VERSION} for {info['description']}...")
+    console.print(f"    Size: ~{info['size_mb']} MB")
+
+    ok = download_file_with_progress(info["url"], dest, label=f"LocalAI {LOCALAI_VERSION}")
+    if ok and os_name != "windows":
+        try:
+            import os as _os
+            _os.chmod(dest, 0o755)
+        except OSError:
+            pass
+    return ok
+
+
+# ---------------------------------------------------------------------------
 # Package installation
 # ---------------------------------------------------------------------------
 
@@ -678,7 +813,12 @@ def main() -> None:
     want_linux = _confirm("  Bundle Linux packages? (~200 MB, no pip install on host)", default=True)
     want_prov  = _confirm("  Include LLM provider SDKs? (anthropic, openai, google-auth)", default=True)
     want_tools = _confirm("  Include agent tools? (pyautogui, pyperclip)", default=True)
-    want_voice = _confirm("  Include voice pipeline? (assemblyai, elevenlabs, Pillow)", default=False)
+    want_voice    = _confirm("  Include voice pipeline? (assemblyai, elevenlabs, Pillow)", default=False)
+    want_localai  = _confirm(
+        "  Download LocalAI binary? (~300 MB, replaces raw llama.cpp — multi-model, "
+        "OpenAI-compatible API, optional Whisper STT)",
+        default=False,
+    )
     print()
 
     # Model selection
@@ -822,6 +962,15 @@ def main() -> None:
             ok = download_gguf_model(m, models_dir, hf_token=hf_token)
             if not ok:
                 console.print(f"  [yellow]⚠ Failed to download {m['name']}[/yellow]")
+
+    # 3f — LocalAI binary
+    if want_localai:
+        console.print("\n[bold]3f.[/bold] Downloading LocalAI binary ...")
+        ok = download_localai_binary(usb_root)
+        if ok:
+            _ok("LocalAI binary saved to USB/bin/")
+        else:
+            console.print("  [yellow]⚠ LocalAI download failed — you can add it later[/yellow]")
 
     # ── STEP 4: Verify ───────────────────────────────────────────────────────
     _step(4, "Verification")
@@ -1008,6 +1157,24 @@ if __name__ == "__main__":
                 add_models_wizard(target)
             else:
                 print("Usage: python flash_usb.py --add-models --target H:\\")
+        elif "--add-localai" in sys.argv:
+            # Download LocalAI binary onto an existing USB
+            target = None
+            if "--target" in sys.argv:
+                idx = sys.argv.index("--target")
+                if idx + 1 < len(sys.argv):
+                    target = sys.argv[idx + 1]
+            if not target:
+                target = input("  USB path (e.g. H:\\): ").strip()
+            if target:
+                usb_path = Path(target).resolve()
+                ok = download_localai_binary(usb_path)
+                if ok:
+                    print(f"  LocalAI binary downloaded to {usb_path / 'bin'}")
+                else:
+                    print("  Download failed.")
+            else:
+                print("Usage: python flash_usb.py --add-localai --target H:\\")
         elif "--update" in sys.argv:
             # Delegate to update_usb.py
             update_script = PROJECT_ROOT / "update_usb.py"
