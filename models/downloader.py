@@ -187,7 +187,20 @@ class _HfHubBackend:
             local_dir_use_symlinks=False,
             token=self.token,
         )
-        return Path(path)
+        path = Path(path)
+        # Register the downloaded file (SHA-256 computed lazily via verify())
+        try:
+            from models.registry import ModelRegistry
+            registry = ModelRegistry(path.parent)
+            registry.add(
+                filename=path.name,
+                repo_id=repo_id,
+                size_bytes=path.stat().st_size,
+                sha256="",
+            )
+        except Exception as _reg_exc:
+            logger.debug("Registry update skipped: %s", _reg_exc)
+        return path
 
 
 class _RequestsBackend:
@@ -276,6 +289,19 @@ class _RequestsBackend:
                 downloaded += len(chunk)
                 if progress_fn:
                     progress_fn(downloaded, total, filename)
+
+        # Register the downloaded file (SHA-256 computed lazily via verify())
+        try:
+            from models.registry import ModelRegistry
+            registry = ModelRegistry(target.parent)
+            registry.add(
+                filename=target.name,
+                repo_id=repo_id,
+                size_bytes=target.stat().st_size,
+                sha256="",
+            )
+        except Exception as _reg_exc:
+            logger.debug("Registry update skipped: %s", _reg_exc)
 
         return target
 
@@ -464,6 +490,80 @@ class ModelDownloader:
         return models
 
     # ------------------------------------------------------------------
+    # Registry-backed operations
+    # ------------------------------------------------------------------
+
+    def verify(self, filename: str) -> tuple[bool, str]:
+        """
+        Verify SHA-256 integrity of a downloaded model.
+
+        On the first call the hash is computed and stored; subsequent calls
+        compare against the stored value.  Delegates to ModelRegistry.
+
+        Returns:
+            (True, message)  if the file passes integrity check.
+            (False, message) if the file is missing or the hash mismatches.
+        """
+        try:
+            from models.registry import ModelRegistry
+            registry = ModelRegistry(self.models_dir)
+            return registry.verify(filename)
+        except Exception as exc:
+            logger.error("verify() failed: %s", exc)
+            return False, str(exc)
+
+    def delete(self, filename: str) -> bool:
+        """
+        Delete a model file from disk and remove it from the registry.
+
+        Args:
+            filename: Basename of the .gguf file.
+
+        Returns:
+            True if the file existed and was deleted; False otherwise.
+        """
+        try:
+            from models.registry import ModelRegistry
+            registry = ModelRegistry(self.models_dir)
+            return registry.remove(filename)
+        except Exception as exc:
+            logger.error("delete() failed: %s", exc)
+            return False
+
+    def set_active(self, filename: str) -> bool:
+        """
+        Mark model as the active one carry-ai will use at startup.
+
+        Args:
+            filename: Basename of the .gguf file.
+
+        Returns:
+            True if the file exists on disk and was marked active; False otherwise.
+        """
+        try:
+            from models.registry import ModelRegistry
+            registry = ModelRegistry(self.models_dir)
+            return registry.set_active(filename)
+        except Exception as exc:
+            logger.error("set_active() failed: %s", exc)
+            return False
+
+    def get_active(self) -> str | None:
+        """
+        Return the filename of the currently active model.
+
+        Falls back to the first registered model when active_model is not
+        explicitly set.  Returns None when no models are registered.
+        """
+        try:
+            from models.registry import ModelRegistry
+            registry = ModelRegistry(self.models_dir)
+            return registry.get_active()
+        except Exception as exc:
+            logger.error("get_active() failed: %s", exc)
+            return None
+
+    # ------------------------------------------------------------------
     # Interactive CLI
     # ------------------------------------------------------------------
 
@@ -643,6 +743,22 @@ def main():
     p_sug = sub.add_parser("suggest", help="Suggest models for your RAM")
     p_sug.add_argument("--ram", type=float, help="Override RAM in GB")
 
+    # verify
+    p_verify = sub.add_parser("verify", help="Verify SHA-256 integrity of a model file")
+    p_verify.add_argument("filename", help="GGUF filename (basename only)")
+
+    # delete
+    p_delete = sub.add_parser("delete", help="Delete a model file and remove from registry")
+    p_delete.add_argument("filename", help="GGUF filename (basename only)")
+    p_delete.add_argument("-y", "--yes", action="store_true", help="Skip confirmation prompt")
+
+    # set-active
+    p_setactive = sub.add_parser("set-active", help="Mark a model as the active one")
+    p_setactive.add_argument("filename", help="GGUF filename (basename only)")
+
+    # active
+    sub.add_parser("active", help="Show which model is currently active")
+
     parser.add_argument("--token", help="HuggingFace token for gated models")
 
     args = parser.parse_args()
@@ -703,6 +819,48 @@ def main():
         for s in suggestions:
             print(f"    {s['model_name']} {s['suggested_quant']}  (min {s['min_ram_gb']}GB)")
             print(f"      Search: {s['search_query']}")
+
+    elif args.command == "verify":
+        print(f"  Verifying {args.filename} ...")
+        ok, msg = dl.verify(args.filename)
+        status = "PASS" if ok else "FAIL"
+        print(f"  [{status}] {msg}")
+        sys.exit(0 if ok else 1)
+
+    elif args.command == "delete":
+        target = dl.models_dir / args.filename
+        if not target.exists():
+            print(f"  File not found: {target}")
+            sys.exit(1)
+        size_display = f"{target.stat().st_size / (1024**3):.2f} GB"
+        if not args.yes:
+            confirm = input(
+                f"  Delete {args.filename} ({size_display})? [y/N] "
+            ).strip().lower()
+            if confirm not in ("y", "yes"):
+                print("  Cancelled.")
+                sys.exit(0)
+        deleted = dl.delete(args.filename)
+        if deleted:
+            print(f"  Deleted: {args.filename}")
+        else:
+            print(f"  Could not delete {args.filename}.")
+            sys.exit(1)
+
+    elif args.command == "set-active":
+        ok = dl.set_active(args.filename)
+        if ok:
+            print(f"  Active model set to: {args.filename}")
+        else:
+            print(f"  File not found: {args.filename}")
+            sys.exit(1)
+
+    elif args.command == "active":
+        active = dl.get_active()
+        if active:
+            print(f"  Active model: {active}")
+        else:
+            print("  No active model set (no models downloaded yet).")
 
 
 if __name__ == "__main__":

@@ -973,266 +973,659 @@ class CarryAIApp:
 # Model Manager — download / delete GGUF models from the GUI
 # ---------------------------------------------------------------------------
 class ModelManagerWindow:
-    """Toplevel window for browsing, downloading, and deleting GGUF models."""
+    """
+    Toplevel window for full GGUF model management.
+
+    Tabs:
+      My Models  — list downloaded models with Set-Active / Verify / Delete
+      Find Models — search HuggingFace, browse quantizations, download
+    """
+
+    # ── class-level download state shared across methods ──────────────────
+    _dl_progress: float = 0.0
+    _dl_status: str = ""
+    _dl_result: tuple | None = None
 
     def __init__(self, parent, colors: dict):
         self.C = colors
         self._models_dir = PROJECT_ROOT / "models"
         self._models_dir.mkdir(exist_ok=True)
-        self._hf_token = ""
+
+        # Download state
         self._download_thread: threading.Thread | None = None
         self._cancel = threading.Event()
 
+        # Search / browse state
+        self._search_thread: threading.Thread | None = None
+        self._search_repos: list = []          # list of RepoInfo dicts
+        self._files_thread: threading.Thread | None = None
+        self._files_result: list = []          # list of ModelFile dicts
+        self._selected_repo: str = ""
+        self._selected_file: dict | None = None
+
+        # Active tab
+        self._active_tab = tk.StringVar(value="my")
+
+        # Available RAM for display
+        try:
+            import psutil
+            self._ram_gb = psutil.virtual_memory().available / (1024 ** 3)
+        except ImportError:
+            self._ram_gb = 0.0
+
         self._win = tk.Toplevel(parent)
         self._win.title("carry-ai — Model Manager")
-        self._win.geometry("750x600")
+        self._win.geometry("860x680")
         self._win.configure(bg=self.C["bg"])
         self._win.transient(parent)
         self._win.grab_set()
 
         self._build_ui()
-        self._refresh_list()
+        self._show_tab("my")
+
+    # ── UI construction ────────────────────────────────────────────────────
 
     def _build_ui(self):
-        # Header
+        from tkinter import ttk
+
+        # ── Header ──────────────────────────────────────────────────────────
         hdr = tk.Frame(self._win, bg=self.C["bg2"], height=50)
         hdr.pack(fill="x")
         hdr.pack_propagate(False)
         tk.Label(hdr, text="Model Manager", font=(FONT_FAMILY, 15, "bold"),
                  fg=self.C["fg"], bg=self.C["bg2"]).pack(side="left", padx=16)
+        if self._ram_gb > 0:
+            tk.Label(hdr, text=f"RAM: {self._ram_gb:.1f} GB free",
+                     font=(FONT_FAMILY, 10), fg=self.C["fg2"],
+                     bg=self.C["bg2"]).pack(side="right", padx=16)
 
-        # RAM info
-        ram_text = ""
-        try:
-            import psutil
-            ram_text = f"RAM: {psutil.virtual_memory().available / (1024**3):.1f} GB free"
-        except ImportError:
-            pass
-        if ram_text:
-            tk.Label(hdr, text=ram_text, font=(FONT_FAMILY, 10),
-                     fg=self.C["fg2"], bg=self.C["bg2"]).pack(side="right", padx=16)
-
-        # HF Token entry (for gated models)
-        token_frame = tk.Frame(self._win, bg=self.C["bg3"])
-        token_frame.pack(fill="x", padx=0, pady=0)
-        tk.Label(token_frame, text="HF Token (for Gemma/Llama):",
+        # ── HF Token ────────────────────────────────────────────────────────
+        tf = tk.Frame(self._win, bg=self.C["bg3"])
+        tf.pack(fill="x")
+        tk.Label(tf, text="HF Token (Gemma/Llama):",
                  font=(FONT_FAMILY, 10), fg=self.C["fg2"],
                  bg=self.C["bg3"]).pack(side="left", padx=(16, 6), pady=6)
-        self._token_entry = tk.Entry(token_frame, width=40, show="*",
-                                      bg=self.C["input_bg"], fg=self.C["fg"],
-                                      insertbackground=self.C["fg"],
-                                      font=(FONT_FAMILY, 10), relief="flat")
+        self._token_entry = tk.Entry(tf, width=38, show="*",
+                                     bg=self.C["input_bg"], fg=self.C["fg"],
+                                     insertbackground=self.C["fg"],
+                                     font=(FONT_FAMILY, 10), relief="flat")
         self._token_entry.pack(side="left", padx=4, pady=6)
         self._token_entry.insert(0, os.environ.get("HF_TOKEN", ""))
-        tk.Label(token_frame, text="Get one at huggingface.co/settings/tokens",
+        tk.Label(tf, text="huggingface.co/settings/tokens",
                  font=(FONT_FAMILY, 9), fg=self.C["fg3"],
-                 bg=self.C["bg3"]).pack(side="left", padx=8, pady=6)
+                 bg=self.C["bg3"]).pack(side="left", padx=8)
 
-        # Scrollable model list
-        self._list_frame = tk.Frame(self._win, bg=self.C["bg"])
-        self._list_frame.pack(fill="both", expand=True, padx=0, pady=0)
+        # ── Tab bar ─────────────────────────────────────────────────────────
+        tab_bar = tk.Frame(self._win, bg=self.C["bg3"], height=36)
+        tab_bar.pack(fill="x")
+        tab_bar.pack_propagate(False)
 
-        self._canvas = tk.Canvas(self._list_frame, bg=self.C["bg"],
-                                  highlightthickness=0, bd=0)
-        scrollbar = tk.Scrollbar(self._list_frame, command=self._canvas.yview,
-                                  bg=self.C["bg"], troughcolor=self.C["bg3"])
-        self._inner = tk.Frame(self._canvas, bg=self.C["bg"])
-        self._inner.bind("<Configure>",
-                         lambda e: self._canvas.configure(scrollregion=self._canvas.bbox("all")))
-        self._canvas.create_window((0, 0), window=self._inner, anchor="nw")
-        self._canvas.configure(yscrollcommand=scrollbar.set)
-        scrollbar.pack(side="right", fill="y")
-        self._canvas.pack(side="left", fill="both", expand=True)
+        self._tab_btns = {}
+        for key, label in (("my", "My Models"), ("find", "Find & Download")):
+            btn = tk.Button(
+                tab_bar, text=label, font=(FONT_FAMILY, 10, "bold"),
+                relief="flat", bd=0, padx=18,
+                command=lambda k=key: self._show_tab(k),
+            )
+            btn.pack(side="left", fill="y")
+            self._tab_btns[key] = btn
 
-        # Progress bar area at bottom
-        self._progress_frame = tk.Frame(self._win, bg=self.C["bg3"], height=50)
-        self._progress_frame.pack(fill="x")
-        self._progress_frame.pack_propagate(False)
-        self._progress_lbl = tk.Label(self._progress_frame, text="",
-                                       font=(FONT_FAMILY, 10), fg=self.C["fg2"],
-                                       bg=self.C["bg3"])
-        self._progress_lbl.pack(side="left", padx=16, pady=8)
+        # ── Tab content ──────────────────────────────────────────────────────
+        self._tab_content = tk.Frame(self._win, bg=self.C["bg"])
+        self._tab_content.pack(fill="both", expand=True)
+
+        # My Models frame
+        self._my_frame = tk.Frame(self._tab_content, bg=self.C["bg"])
+        self._my_canvas = tk.Canvas(self._my_frame, bg=self.C["bg"],
+                                     highlightthickness=0, bd=0)
+        my_sb = tk.Scrollbar(self._my_frame, command=self._my_canvas.yview,
+                              bg=self.C["bg"], troughcolor=self.C["bg3"])
+        self._my_inner = tk.Frame(self._my_canvas, bg=self.C["bg"])
+        self._my_inner.bind(
+            "<Configure>",
+            lambda e: self._my_canvas.configure(scrollregion=self._my_canvas.bbox("all"))
+        )
+        self._my_canvas.create_window((0, 0), window=self._my_inner, anchor="nw")
+        self._my_canvas.configure(yscrollcommand=my_sb.set)
+        my_sb.pack(side="right", fill="y")
+        self._my_canvas.pack(side="left", fill="both", expand=True)
+
+        # Find Models frame
+        self._find_frame = tk.Frame(self._tab_content, bg=self.C["bg"])
+        self._build_find_tab()
+
+        # ── Progress bar (shared, always visible at bottom) ─────────────────
+        prog_frame = tk.Frame(self._win, bg=self.C["bg3"], height=52)
+        prog_frame.pack(fill="x")
+        prog_frame.pack_propagate(False)
+
+        self._progress_lbl = tk.Label(prog_frame, text="",
+                                       font=(FONT_FAMILY, 9), fg=self.C["fg2"],
+                                       bg=self.C["bg3"], anchor="w")
+        self._progress_lbl.pack(side="left", padx=16, pady=4, fill="x", expand=True)
+
         self._progress_bar_var = tk.DoubleVar(value=0)
-        from tkinter import ttk
         style = ttk.Style()
         style.configure("carry.Horizontal.TProgressbar",
                         background=self.C["accent"], troughcolor=self.C["bg"])
         self._progress_bar = ttk.Progressbar(
-            self._progress_frame, variable=self._progress_bar_var,
-            maximum=100, style="carry.Horizontal.TProgressbar")
-        self._progress_bar.pack(side="left", fill="x", expand=True, padx=(0, 16), pady=12)
+            prog_frame, variable=self._progress_bar_var,
+            maximum=100, style="carry.Horizontal.TProgressbar", length=240)
+        self._progress_bar.pack(side="right", padx=16, pady=14)
 
-    def _refresh_list(self):
-        """Rebuild the model list UI."""
-        for w in self._inner.winfo_children():
+    def _build_find_tab(self):
+        """Build the Find & Download tab content (called once)."""
+        C = self.C
+        ff = self._find_frame
+
+        # Search row
+        sr = tk.Frame(ff, bg=C["bg3"])
+        sr.pack(fill="x", padx=0, pady=0)
+        tk.Label(sr, text="Search HF:", font=(FONT_FAMILY, 10), fg=C["fg2"],
+                 bg=C["bg3"]).pack(side="left", padx=(16, 6), pady=8)
+        self._search_var = tk.StringVar()
+        se = tk.Entry(sr, textvariable=self._search_var, width=28,
+                      bg=C["input_bg"], fg=C["fg"], insertbackground=C["fg"],
+                      font=(FONT_FAMILY, 10), relief="flat")
+        se.pack(side="left", padx=4, pady=8)
+        se.bind("<Return>", lambda e: self._do_search())
+        tk.Button(sr, text="Search", font=(FONT_FAMILY, 10, "bold"),
+                  bg=C["accent"], fg="#111", relief="flat", padx=10,
+                  command=self._do_search).pack(side="left", padx=6, pady=6)
+
+        tk.Label(sr, text="or repo ID:", font=(FONT_FAMILY, 10), fg=C["fg2"],
+                 bg=C["bg3"]).pack(side="left", padx=(20, 6), pady=8)
+        self._repo_var = tk.StringVar()
+        re_entry = tk.Entry(sr, textvariable=self._repo_var, width=28,
+                             bg=C["input_bg"], fg=C["fg"], insertbackground=C["fg"],
+                             font=(FONT_FAMILY, 10), relief="flat")
+        re_entry.pack(side="left", padx=4, pady=8)
+        re_entry.bind("<Return>", lambda e: self._do_list_repo())
+        tk.Button(sr, text="List Files", font=(FONT_FAMILY, 10),
+                  bg=C["bg2"], fg=C["fg"], relief="flat", padx=8,
+                  command=self._do_list_repo).pack(side="left", padx=4, pady=6)
+
+        # Two-column layout: left=repos, right=quants
+        cols = tk.Frame(ff, bg=C["bg"])
+        cols.pack(fill="both", expand=True, padx=0, pady=0)
+
+        # Left: search results
+        left = tk.Frame(cols, bg=C["bg"])
+        left.pack(side="left", fill="both", expand=True, padx=(12, 4), pady=8)
+        tk.Label(left, text="Search Results", font=(FONT_FAMILY, 10, "bold"),
+                 fg=C["fg2"], bg=C["bg"]).pack(anchor="w", pady=(0, 4))
+        lb_frame = tk.Frame(left, bg=C["bg"])
+        lb_frame.pack(fill="both", expand=True)
+        self._repo_lb = tk.Listbox(lb_frame, bg=C["bg2"], fg=C["fg"],
+                                    selectbackground=C["accent"], selectforeground="#111",
+                                    font=(FONT_FAMILY, 10), relief="flat",
+                                    activestyle="none", bd=0)
+        repo_sb = tk.Scrollbar(lb_frame, command=self._repo_lb.yview,
+                                bg=C["bg"], troughcolor=C["bg3"])
+        self._repo_lb.configure(yscrollcommand=repo_sb.set)
+        repo_sb.pack(side="right", fill="y")
+        self._repo_lb.pack(side="left", fill="both", expand=True)
+        self._repo_lb.bind("<<ListboxSelect>>", self._on_repo_select)
+
+        # Right: quantizations
+        right = tk.Frame(cols, bg=C["bg"])
+        right.pack(side="left", fill="both", expand=True, padx=(4, 12), pady=8)
+        tk.Label(right, text="Quantizations", font=(FONT_FAMILY, 10, "bold"),
+                 fg=C["fg2"], bg=C["bg"]).pack(anchor="w", pady=(0, 4))
+        qf = tk.Frame(right, bg=C["bg"])
+        qf.pack(fill="both", expand=True)
+        self._quant_lb = tk.Listbox(qf, bg=C["bg2"], fg=C["fg"],
+                                     selectbackground=C["accent"], selectforeground="#111",
+                                     font=(FONT_FAMILY, 10), relief="flat",
+                                     activestyle="none", bd=0)
+        q_sb = tk.Scrollbar(qf, command=self._quant_lb.yview,
+                             bg=C["bg"], troughcolor=C["bg3"])
+        self._quant_lb.configure(yscrollcommand=q_sb.set)
+        q_sb.pack(side="right", fill="y")
+        self._quant_lb.pack(side="left", fill="both", expand=True)
+        self._quant_lb.bind("<<ListboxSelect>>", self._on_quant_select)
+
+        # Download button row
+        dl_row = tk.Frame(ff, bg=C["bg3"])
+        dl_row.pack(fill="x")
+        self._dl_btn = tk.Button(dl_row, text="Download Selected",
+                                  font=(FONT_FAMILY, 11, "bold"),
+                                  bg=C["accent"], fg="#111", relief="flat",
+                                  padx=20, pady=6,
+                                  state="disabled",
+                                  command=self._start_download_selected)
+        self._dl_btn.pack(side="left", padx=16, pady=8)
+        self._dl_info_lbl = tk.Label(dl_row, text="",
+                                      font=(FONT_FAMILY, 9), fg=C["fg2"], bg=C["bg3"])
+        self._dl_info_lbl.pack(side="left", padx=8)
+
+    # ── Tab switching ──────────────────────────────────────────────────────
+
+    def _show_tab(self, tab: str):
+        self._active_tab.set(tab)
+        # Update tab button colours
+        for k, btn in self._tab_btns.items():
+            if k == tab:
+                btn.config(bg=self.C["accent"], fg="#111")
+            else:
+                btn.config(bg=self.C["bg3"], fg=self.C["fg2"])
+
+        for frame in (self._my_frame, self._find_frame):
+            frame.pack_forget()
+
+        if tab == "my":
+            self._my_frame.pack(fill="both", expand=True)
+            self._refresh_my_models()
+        else:
+            self._find_frame.pack(fill="both", expand=True)
+
+    # ── My Models tab ─────────────────────────────────────────────────────
+
+    def _refresh_my_models(self):
+        """Rebuild the My Models list from disk + registry."""
+        for w in self._my_inner.winfo_children():
             w.destroy()
 
-        # Scan existing models
-        existing = {}
+        # Load registry if available
+        registry_info: dict[str, dict] = {}
+        active_model = ""
+        try:
+            from models.registry import get_registry
+            reg = get_registry()
+            reg.scan()
+            active_model = reg.get_active() or ""
+            for entry in reg.list_all():
+                registry_info[entry["filename"]] = entry
+        except Exception:
+            pass
+
+        # Scan models dir directly as fallback
+        found: list[dict] = []
         if self._models_dir.is_dir():
-            for f in self._models_dir.glob("*.gguf"):
-                existing[f.name] = f.stat().st_size / (1024**3)
+            for f in sorted(self._models_dir.glob("*.gguf")):
+                size_gb = f.stat().st_size / (1024 ** 3)
+                info = registry_info.get(f.name, {})
+                found.append({
+                    "filename": f.name,
+                    "size_gb": size_gb,
+                    "quant": info.get("quant", "") or self._extract_quant(f.name),
+                    "verified_ok": info.get("verified_ok"),
+                    "repo_id": info.get("repo_id", ""),
+                    "active": f.name == active_model,
+                })
 
-        # Section: Downloaded models
-        if existing:
-            tk.Label(self._inner, text="Downloaded Models",
-                     font=(FONT_FAMILY, 13, "bold"), fg=self.C["accent"],
-                     bg=self.C["bg"]).pack(anchor="w", padx=16, pady=(12, 4))
-            for fname, size in sorted(existing.items()):
-                row = tk.Frame(self._inner, bg=self.C["bg2"])
-                row.pack(fill="x", padx=16, pady=2)
-                tk.Label(row, text=f"  {fname}", font=(FONT_FAMILY, 11),
-                         fg=self.C["fg"], bg=self.C["bg2"],
-                         anchor="w").pack(side="left", fill="x", expand=True, pady=6)
-                tk.Label(row, text=f"{size:.1f} GB", font=(FONT_FAMILY, 10),
-                         fg=self.C["fg2"], bg=self.C["bg2"]).pack(side="left", padx=8)
-                del_btn = tk.Button(row, text="Delete", font=(FONT_FAMILY, 9),
-                                    bg=self.C["error"], fg="#fff", relief="flat",
-                                    command=lambda f=fname: self._delete_model(f))
-                del_btn.pack(side="right", padx=8, pady=4)
+        if not found:
+            tk.Label(self._my_inner,
+                     text="No models downloaded yet.\nSwitch to 'Find & Download' to get one.",
+                     font=(FONT_FAMILY, 11), fg=self.C["fg2"], bg=self.C["bg"],
+                     justify="center").pack(pady=40)
+            return
 
-        # Section: Available for download
-        tk.Label(self._inner, text="Available Models",
-                 font=(FONT_FAMILY, 13, "bold"), fg=self.C["accent"],
-                 bg=self.C["bg"]).pack(anchor="w", padx=16, pady=(16, 4))
+        tk.Label(self._my_inner, text=f"{len(found)} model(s) on this USB",
+                 font=(FONT_FAMILY, 11, "bold"), fg=self.C["accent"],
+                 bg=self.C["bg"]).pack(anchor="w", padx=16, pady=(12, 4))
 
-        for m in GGUF_MODELS:
-            is_downloaded = m["hf_file"] in existing
-            row = tk.Frame(self._inner, bg=self.C["ai_bg"])
-            row.pack(fill="x", padx=16, pady=2)
+        for m in found:
+            row = tk.Frame(self._my_inner,
+                           bg=self.C["accent"] if m["active"] else self.C["bg2"],
+                           pady=2)
+            row.pack(fill="x", padx=16, pady=3)
 
-            # Model info
-            info = tk.Frame(row, bg=self.C["ai_bg"])
-            info.pack(side="left", fill="x", expand=True, pady=6, padx=8)
+            # Left: name + meta
+            left = tk.Frame(row, bg=row["bg"])
+            left.pack(side="left", fill="x", expand=True, padx=8, pady=4)
 
-            name_text = m["name"]
-            if m.get("gated"):
-                name_text += "  🔑"
-            tk.Label(info, text=name_text, font=(FONT_FAMILY, 11, "bold"),
-                     fg=self.C["fg"], bg=self.C["ai_bg"],
-                     anchor="w").pack(anchor="w")
-            tk.Label(info, text=f"{m['desc']}  |  ~{m['size_gb']:.1f} GB  |  {m['ram_gb']} GB+ RAM",
-                     font=(FONT_FAMILY, 9), fg=self.C["fg2"],
-                     bg=self.C["ai_bg"], anchor="w").pack(anchor="w")
+            name_label = m["filename"]
+            if m["active"]:
+                name_label = "★ " + name_label
+            tk.Label(left, text=name_label,
+                     font=(FONT_FAMILY, 10, "bold" if m["active"] else "normal"),
+                     fg="#111" if m["active"] else self.C["fg"],
+                     bg=row["bg"], anchor="w").pack(anchor="w")
 
-            # Action button
-            if is_downloaded:
-                tk.Label(row, text="✓ Downloaded", font=(FONT_FAMILY, 10),
-                         fg=self.C["accent"], bg=self.C["ai_bg"]).pack(side="right", padx=12, pady=6)
-            else:
-                dl_btn = tk.Button(row, text="Download", font=(FONT_FAMILY, 10, "bold"),
-                                   bg=self.C["accent"], fg="#111", relief="flat",
-                                   command=lambda m_=m: self._start_download(m_))
-                dl_btn.pack(side="right", padx=12, pady=6)
+            meta_parts = [f"{m['size_gb']:.1f} GB"]
+            if m["quant"]:
+                meta_parts.append(m["quant"])
+            if self._ram_gb > 0:
+                needed = m["size_gb"] + 1.5
+                fits = "fits" if self._ram_gb >= needed else "needs more RAM"
+                meta_parts.append(f"{fits} ({needed:.0f} GB needed)")
+            if m["verified_ok"] is True:
+                meta_parts.append("verified ✓")
+            elif m["verified_ok"] is False:
+                meta_parts.append("CORRUPT!")
+
+            tk.Label(left, text="  ".join(meta_parts),
+                     font=(FONT_FAMILY, 9),
+                     fg="#333" if m["active"] else self.C["fg2"],
+                     bg=row["bg"], anchor="w").pack(anchor="w")
+
+            # Right: action buttons
+            btns = tk.Frame(row, bg=row["bg"])
+            btns.pack(side="right", padx=8, pady=4)
+
+            if not m["active"]:
+                tk.Button(btns, text="Set Active", font=(FONT_FAMILY, 9),
+                          bg=self.C["bg3"], fg=self.C["fg"], relief="flat", padx=6,
+                          command=lambda fn=m["filename"]: self._set_active(fn)
+                          ).pack(side="left", padx=2)
+
+            tk.Button(btns, text="Verify", font=(FONT_FAMILY, 9),
+                      bg=self.C["bg3"], fg=self.C["fg"], relief="flat", padx=6,
+                      command=lambda fn=m["filename"]: self._verify_model(fn)
+                      ).pack(side="left", padx=2)
+
+            tk.Button(btns, text="Delete", font=(FONT_FAMILY, 9),
+                      bg=self.C["error"], fg="#fff", relief="flat", padx=6,
+                      command=lambda fn=m["filename"]: self._delete_model(fn)
+                      ).pack(side="left", padx=2)
+
+    def _set_active(self, filename: str):
+        try:
+            from models.registry import get_registry
+            get_registry().set_active(filename)
+            self._progress_lbl.config(text=f"Active model set to: {filename}")
+        except Exception as e:
+            self._progress_lbl.config(text=f"Could not set active: {e}")
+        self._refresh_my_models()
+
+    def _verify_model(self, filename: str):
+        self._progress_lbl.config(text=f"Verifying {filename}…")
+        self._progress_bar_var.set(0)
+
+        def _worker():
+            try:
+                from models.registry import get_registry
+                ok, msg = get_registry().verify(filename)
+                self._dl_result = ("ok" if ok else "error", msg)
+            except Exception as e:
+                self._dl_result = ("error", f"Verify failed: {e}")
+
+        threading.Thread(target=_worker, daemon=True).start()
+        self._poll_verify()
+
+    def _poll_verify(self):
+        if self._dl_result:
+            _, msg = self._dl_result
+            self._dl_result = None
+            self._progress_lbl.config(text=msg)
+            self._refresh_my_models()
+            return
+        self._win.after(200, self._poll_verify)
 
     def _delete_model(self, filename: str):
         path = self._models_dir / filename
         if path.exists():
             path.unlink()
+        try:
+            from models.registry import get_registry
+            get_registry().remove(filename)
+        except Exception:
+            pass
         self._progress_lbl.config(text=f"Deleted {filename}")
-        self._refresh_list()
+        self._refresh_my_models()
+
+    @staticmethod
+    def _extract_quant(filename: str) -> str:
+        import re as _re
+        m = _re.search(
+            r"[_\-\.]((?:IQ[1-4]_[A-Z]+|Q[0-9]+(?:_[A-Z0-9]+)*|F16|F32|BF16))"
+            r"(?:[_\-\.]|\.gguf)", filename, _re.IGNORECASE
+        )
+        return m.group(1).upper() if m else ""
+
+    # ── Find & Download tab ────────────────────────────────────────────────
+
+    def _do_search(self):
+        query = self._search_var.get().strip()
+        if not query:
+            return
+        self._repo_lb.delete(0, "end")
+        self._quant_lb.delete(0, "end")
+        self._search_repos = []
+        self._progress_lbl.config(text=f"Searching HuggingFace for '{query}'…")
+        self._progress_bar_var.set(0)
+        self._dl_btn.config(state="disabled")
+
+        def _worker():
+            try:
+                from models.downloader import ModelDownloader
+                dl = ModelDownloader(hf_token=self._token_entry.get().strip() or None)
+                results = dl.search(query, limit=15)
+                self._search_repos = results
+                self._dl_result = ("search_done", f"Found {len(results)} repos")
+            except Exception as e:
+                self._dl_result = ("error", f"Search failed: {e}")
+
+        self._search_thread = threading.Thread(target=_worker, daemon=True)
+        self._search_thread.start()
+        self._poll_search()
+
+    def _poll_search(self):
+        if self._dl_result and self._dl_result[0] in ("search_done", "error"):
+            _, msg = self._dl_result
+            self._dl_result = None
+            self._progress_lbl.config(text=msg)
+            self._repo_lb.delete(0, "end")
+            for r in self._search_repos:
+                repo_id = r.repo_id if hasattr(r, "repo_id") else r.get("repo_id", "")
+                downloads = r.downloads if hasattr(r, "downloads") else r.get("downloads", 0)
+                label = f"{repo_id}  ({downloads:,} downloads)" if downloads else repo_id
+                self._repo_lb.insert("end", label)
+            return
+        self._win.after(150, self._poll_search)
+
+    def _do_list_repo(self):
+        repo_id = self._repo_var.get().strip()
+        if not repo_id:
+            return
+        self._selected_repo = repo_id
+        self._list_quants_for(repo_id)
+
+    def _on_repo_select(self, event):
+        sel = self._repo_lb.curselection()
+        if not sel:
+            return
+        # Extract repo_id from label (everything before first whitespace after two slashes)
+        label = self._repo_lb.get(sel[0])
+        repo_id = label.split("  ")[0].strip()
+        self._selected_repo = repo_id
+        self._repo_var.set(repo_id)
+        self._list_quants_for(repo_id)
+
+    def _list_quants_for(self, repo_id: str):
+        self._quant_lb.delete(0, "end")
+        self._files_result = []
+        self._selected_file = None
+        self._dl_btn.config(state="disabled")
+        self._progress_lbl.config(text=f"Fetching files from {repo_id}…")
+
+        def _worker():
+            try:
+                from models.downloader import ModelDownloader
+                dl = ModelDownloader(hf_token=self._token_entry.get().strip() or None)
+                files = dl.list_files(repo_id)
+                self._files_result = files
+                self._dl_result = ("files_done", f"{len(files)} quantizations found")
+            except Exception as e:
+                self._dl_result = ("error", f"Failed: {e}")
+
+        self._files_thread = threading.Thread(target=_worker, daemon=True)
+        self._files_thread.start()
+        self._poll_files()
+
+    def _poll_files(self):
+        if self._dl_result and self._dl_result[0] in ("files_done", "error"):
+            _, msg = self._dl_result
+            self._dl_result = None
+            self._progress_lbl.config(text=msg)
+            self._quant_lb.delete(0, "end")
+            existing = {f.name for f in self._models_dir.glob("*.gguf")} if self._models_dir.is_dir() else set()
+            for f in self._files_result:
+                fname = f.filename if hasattr(f, "filename") else f.get("filename", "")
+                size_gb = (f.size_bytes if hasattr(f, "size_bytes") else f.get("size_bytes", 0)) / (1024**3)
+                quant = f.quant if hasattr(f, "quant") else f.get("quant", "")
+                needed = size_gb + 1.5
+                ram_hint = ""
+                if self._ram_gb > 0:
+                    ram_hint = f" ✓" if self._ram_gb >= needed else f" (need {needed:.0f}GB)"
+                status = " [downloaded]" if fname in existing else ""
+                label = f"[{quant or '?':>8}]  {size_gb:.1f} GB{ram_hint}  {fname}{status}"
+                self._quant_lb.insert("end", label)
+            return
+        self._win.after(150, self._poll_files)
+
+    def _on_quant_select(self, event):
+        sel = self._quant_lb.curselection()
+        if not sel or not self._files_result:
+            return
+        idx = sel[0]
+        if idx < len(self._files_result):
+            f = self._files_result[idx]
+            self._selected_file = f
+            fname = f.filename if hasattr(f, "filename") else f.get("filename", "")
+            size_gb = (f.size_bytes if hasattr(f, "size_bytes") else f.get("size_bytes", 0)) / (1024**3)
+            self._dl_info_lbl.config(text=f"{fname}  ({size_gb:.2f} GB)")
+            self._dl_btn.config(state="normal")
+
+    def _start_download_selected(self):
+        if not self._selected_file or not self._selected_repo:
+            return
+        f = self._selected_file
+        fname = f.filename if hasattr(f, "filename") else f.get("filename", "")
+        gated = False  # unknown from search; rely on 401 handling
+        model = {
+            "name": fname,
+            "hf_repo": self._selected_repo,
+            "hf_file": fname,
+            "gated": gated,
+        }
+        self._start_download(model)
+
+    # ── Download engine (shared) ───────────────────────────────────────────
 
     def _start_download(self, model: dict):
         if self._download_thread and self._download_thread.is_alive():
             self._progress_lbl.config(text="A download is already in progress.")
             return
-
-        self._hf_token = self._token_entry.get().strip()
-        if model.get("gated") and not self._hf_token:
+        hf_token = self._token_entry.get().strip()
+        if model.get("gated") and not hf_token:
             self._progress_lbl.config(
-                text="This model needs an HF token. Paste it in the field above.")
+                text="This model needs an HF token — paste it in the field above.")
             return
-
         self._cancel.clear()
+        self._dl_progress = 0.0
+        self._dl_status = ""
+        self._dl_result = None
         self._progress_bar_var.set(0)
-        self._progress_lbl.config(text=f"Downloading {model['name']}...")
+        self._progress_lbl.config(text=f"Starting download: {model.get('name', model['hf_file'])}…")
         self._download_thread = threading.Thread(
-            target=self._download_worker, args=(model,), daemon=True)
+            target=self._download_worker, args=(model, hf_token), daemon=True)
         self._download_thread.start()
         self._poll_download()
 
-    def _download_worker(self, model: dict):
-        """Download a model in a background thread, updating progress."""
+    def _download_worker(self, model: dict, hf_token: str = ""):
+        """Download a model in a background thread with resume + retry."""
         import time as _time
         from urllib.request import urlopen, Request
         from urllib.error import URLError, HTTPError
 
-        dest = self._models_dir / model["hf_file"]
-        url = f"https://huggingface.co/{model['hf_repo']}/resolve/main/{model['hf_file']}"
+        filename = model["hf_file"]
+        dest = self._models_dir / filename
+        url = f"https://huggingface.co/{model['hf_repo']}/resolve/main/{filename}"
+        display_name = model.get("name", filename)
 
         def _attempt(retry: bool = False) -> bool:
-            """Try one download attempt. Returns True on success."""
             try:
+                # Resume support: check existing partial file
+                existing = dest.stat().st_size if dest.exists() else 0
                 headers = {"User-Agent": "carry-ai/desktop"}
-                if self._hf_token:
-                    headers["Authorization"] = f"Bearer {self._hf_token}"
+                if hf_token:
+                    headers["Authorization"] = f"Bearer {hf_token}"
+                if existing > 0 and not retry:
+                    headers["Range"] = f"bytes={existing}-"
+
                 req = Request(url, headers=headers)
                 with urlopen(req, timeout=600) as resp:
-                    total = int(resp.headers.get("Content-Length", 0))
-                    written = 0
-                    with open(dest, "wb") as f:
+                    content_len = int(resp.headers.get("Content-Length", 0))
+                    total = content_len + existing if existing > 0 and resp.status == 206 else content_len
+                    written = existing
+                    mode = "ab" if existing > 0 and resp.status == 206 else "wb"
+                    if mode == "wb":
+                        written = 0
+
+                    with open(dest, mode) as f:
                         while True:
                             if self._cancel.is_set():
-                                f.close()
-                                dest.unlink(missing_ok=True)
                                 self._dl_result = ("cancelled", "Download cancelled.")
-                                return True  # stop retrying
+                                return True
                             chunk = resp.read(65536)
                             if not chunk:
                                 break
                             f.write(chunk)
                             written += len(chunk)
                             if total:
-                                self._dl_progress = written * 100.0 / total
+                                self._dl_progress = min(written * 100.0 / total, 99.9)
                                 self._dl_status = (
-                                    f"{model['name']}: "
-                                    f"{written / 1_048_576:.0f} / {total / 1_048_576:.0f} MB "
+                                    f"{display_name}: "
+                                    f"{written/1_048_576:.0f}/{total/1_048_576:.0f} MB "
                                     f"({self._dl_progress:.0f}%)"
                                 )
-                self._dl_result = ("ok", f"{model['name']} downloaded successfully!")
+
+                self._dl_progress = 100.0
+                self._dl_result = ("ok", f"{display_name} downloaded! ({dest.stat().st_size/(1024**3):.2f} GB)")
+
+                # Register in registry
+                try:
+                    from models.registry import get_registry
+                    reg = get_registry()
+                    quant = self._extract_quant(filename)
+                    reg.add(filename, repo_id=model.get("hf_repo", ""),
+                            size_bytes=dest.stat().st_size,
+                            gated=model.get("gated", False), quant=quant)
+                    # Auto-set as active if it's the first model
+                    if not reg.get_active():
+                        reg.set_active(filename)
+                except Exception:
+                    pass
                 return True
+
             except HTTPError as e:
-                dest.unlink(missing_ok=True)
+                if dest.exists() and dest.stat().st_size == 0:
+                    dest.unlink(missing_ok=True)
                 if e.code == 401:
                     self._dl_result = ("error",
-                        f"401 Unauthorized.\n"
-                        f"For '{model['name']}' you need a HuggingFace token.\n"
-                        f"  1. Go to huggingface.co/settings/tokens and create a token\n"
-                        f"  2. Accept the model license at huggingface.co/{model['hf_repo']}\n"
+                        f"401 Unauthorized — HF token required for '{display_name}'.\n"
+                        f"  1. huggingface.co/settings/tokens → create a token\n"
+                        f"  2. Accept license: huggingface.co/{model.get('hf_repo','')}\n"
                         f"  3. Paste your token in the HF Token field above")
-                    return True  # no point retrying auth errors
+                    return True
                 elif e.code in (500, 502, 503, 504) and not retry:
-                    # Transient server error — wait and retry once
-                    self._dl_status = f"Server error ({e.code}), retrying in 5 s..."
+                    self._dl_status = f"Server error {e.code}, retrying in 5 s…"
                     _time.sleep(5)
-                    return False  # signal caller to retry
+                    return False
                 else:
                     self._dl_result = ("error",
-                        f"HTTP {e.code}: {e.reason}\n"
-                        f"URL: {url}\n"
-                        f"Try opening that URL in your browser to verify the file exists.")
+                        f"HTTP {e.code} — {e.reason}\nURL: {url}")
                     return True
             except (URLError, OSError) as e:
-                dest.unlink(missing_ok=True)
-                self._dl_result = ("error", f"Download failed: {e}\nURL: {url}")
+                self._dl_result = ("error", f"Download failed: {e}")
                 return True
 
-        done = _attempt(retry=False)
-        if not done:
+        if not _attempt(retry=False):
             _attempt(retry=True)
 
-    _dl_progress = 0.0
-    _dl_status = ""
-    _dl_result: tuple | None = None
-
     def _poll_download(self):
-        """Update progress bar from download thread."""
+        """Poll background download thread, update progress bar."""
         if self._dl_result:
             status, msg = self._dl_result
             self._dl_result = None
             self._progress_bar_var.set(100 if status == "ok" else 0)
-            self._progress_lbl.config(text=msg)
-            self._refresh_list()
+            # Show only first line to fit label
+            self._progress_lbl.config(text=msg.splitlines()[0])
+            # Refresh My Models tab if it's visible
+            if self._active_tab.get() == "my":
+                self._refresh_my_models()
             return
 
         self._progress_bar_var.set(self._dl_progress)
