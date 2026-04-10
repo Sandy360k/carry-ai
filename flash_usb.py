@@ -67,6 +67,7 @@ except ImportError:
     console = _Plain()
 
 PROJECT_ROOT = Path(__file__).resolve().parent
+PKG_CACHE_DIR = PROJECT_ROOT / ".pkg-cache"
 PYTHON_VERSION = "3.11.9"
 PYTHON_EMBED_URL_WIN64 = (
     f"https://www.python.org/ftp/python/{PYTHON_VERSION}/"
@@ -145,8 +146,8 @@ GGUF_MODELS = [
         "name": "Qwen2.5 7B Q4_K_M",
         "ram_gb": 6, "size_gb": 4.7,
         "description": "Strong all-around model, 6 GB RAM",
-        "hf_repo": "Qwen/Qwen2.5-7B-Instruct-GGUF",
-        "hf_file": "qwen2.5-7b-instruct-q4_k_m.gguf",
+        "hf_repo": "bartowski/Qwen2.5-7B-Instruct-GGUF",
+        "hf_file": "Qwen2.5-7B-Instruct-Q4_K_M.gguf",
         "gated": False,
     },
     # ── 8–10 GB RAM ─────────────────────────────────────────────────────────
@@ -172,8 +173,8 @@ GGUF_MODELS = [
         "name": "Qwen2.5 7B Q8_0",
         "ram_gb": 10, "size_gb": 8.1,
         "description": "High quality 7B, 10 GB RAM",
-        "hf_repo": "Qwen/Qwen2.5-7B-Instruct-GGUF",
-        "hf_file": "qwen2.5-7b-instruct-q8_0.gguf",
+        "hf_repo": "bartowski/Qwen2.5-7B-Instruct-GGUF",
+        "hf_file": "Qwen2.5-7B-Instruct-Q8_0.gguf",
         "gated": False,
     },
     # ── 12+ GB RAM ──────────────────────────────────────────────────────────
@@ -181,8 +182,8 @@ GGUF_MODELS = [
         "name": "Qwen2.5 14B Q4_K_M",
         "ram_gb": 12, "size_gb": 9.0,
         "description": "Best quality, 12 GB RAM, tool calling",
-        "hf_repo": "Qwen/Qwen2.5-14B-Instruct-GGUF",
-        "hf_file": "qwen2.5-14b-instruct-q4_k_m.gguf",
+        "hf_repo": "bartowski/Qwen2.5-14B-Instruct-GGUF",
+        "hf_file": "Qwen2.5-14B-Instruct-Q4_K_M.gguf",
         "gated": False,
     },
     {
@@ -627,30 +628,95 @@ def download_localai_binary(usb_root: Path) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# Package installation
+# Package installation (with local cache for speed)
 # ---------------------------------------------------------------------------
 
+def _cache_subdir(python_exe: Path | None) -> Path:
+    """Return a platform-specific cache subdirectory."""
+    if python_exe and "windows" in str(python_exe).lower():
+        return PKG_CACHE_DIR / "win64"
+    # Use current platform as heuristic for Linux target
+    return PKG_CACHE_DIR / "linux"
+
+
+def ensure_cache(packages: list[str], cache_dir: Path,
+                 python_exe: Path | None = None) -> None:
+    """Download wheels into cache_dir if not already present."""
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    # Check which packages still need downloading
+    cached_names = {f.name.split("-")[0].lower().replace("_", "-")
+                    for f in cache_dir.glob("*.whl")}
+    to_download = []
+    for pkg in packages:
+        name = re.split(r'[><=!]', pkg)[0].strip().lower().replace("_", "-")
+        if name not in cached_names:
+            to_download.append(pkg)
+
+    if not to_download:
+        console.print(f"  [green]✓[/green] All packages cached ({len(packages)} packages)")
+        return
+
+    console.print(f"  Downloading {len(to_download)} package(s) to local cache ...")
+    interp = str(python_exe) if python_exe else sys.executable
+    r = subprocess.run(
+        [interp, "-m", "pip", "download", "--dest", str(cache_dir),
+         "--no-warn-script-location", "-q"] + to_download,
+        capture_output=True, text=True,
+    )
+    if r.returncode == 0:
+        console.print(f"  [green]✓[/green] Cache updated")
+    else:
+        # Fallback: download one-by-one so partial failures don't block all
+        for pkg in to_download:
+            subprocess.run(
+                [interp, "-m", "pip", "download", "--dest", str(cache_dir),
+                 "-q", pkg],
+                capture_output=True, text=True,
+            )
+
+
 def install_packages(packages: list[str], target_dir: Path,
-                     python_exe: Path | None = None) -> list[str]:
-    """pip install --target each package. Returns names of failures."""
+                     python_exe: Path | None = None,
+                     use_cache: bool = True) -> list[str]:
+    """pip install --target each package. Returns names of failures.
+
+    If use_cache is True and a local cache exists, installs from cache
+    (offline, no network) for much faster repeated flashes.
+    """
     target_dir.mkdir(parents=True, exist_ok=True)
     interp = str(python_exe) if python_exe else sys.executable
+
+    cache_dir = _cache_subdir(python_exe)
+
+    # Try to populate cache first
+    if use_cache:
+        ensure_cache(packages, cache_dir, python_exe)
+
     failed = []
     for pkg in packages:
         name = re.split(r'[><=!]', pkg)[0].strip()
         console.print(f"  Installing [cyan]{name}[/cyan] ...", end=" ")
-        r = subprocess.run(
-            [interp, "-m", "pip", "install", pkg,
-             "--target", str(target_dir),
-             "--upgrade", "--no-warn-script-location", "-q"],
-            capture_output=True, text=True,
-        )
+        cmd = [interp, "-m", "pip", "install", pkg,
+               "--target", str(target_dir),
+               "--upgrade", "--no-warn-script-location", "-q"]
+        if use_cache and cache_dir.exists() and any(cache_dir.glob("*.whl")):
+            cmd += ["--find-links", str(cache_dir)]
+        r = subprocess.run(cmd, capture_output=True, text=True)
         if r.returncode == 0:
             console.print("[green]✓[/green]")
         else:
             console.print("[red]✗[/red]")
             failed.append(name)
     return failed
+
+
+def clear_package_cache() -> None:
+    """Remove the local package cache."""
+    if PKG_CACHE_DIR.exists():
+        shutil.rmtree(str(PKG_CACHE_DIR))
+        console.print("  [green]✓[/green] Package cache cleared.")
+    else:
+        console.print("  [dim]No cache to clear.[/dim]")
 
 
 # ---------------------------------------------------------------------------
@@ -810,7 +876,19 @@ def main() -> None:
         (m for m in reversed(GGUF_MODELS) if m["ram_gb"] <= host_ram),
         GGUF_MODELS[0],
     )
-    console.print(f"  Recommended model  : [bold]{recommended['name']}[/bold] ({recommended['description']})\n")
+    console.print(f"  Recommended model  : [bold]{recommended['name']}[/bold] ({recommended['description']})")
+
+    # Show package cache status
+    cache_size_mb = 0.0
+    if PKG_CACHE_DIR.exists():
+        cache_size_mb = sum(f.stat().st_size for f in PKG_CACHE_DIR.rglob("*") if f.is_file()) / (1024**2)
+    if cache_size_mb > 1:
+        console.print(f"  Package cache      : [bold]{cache_size_mb:.0f} MB[/bold] (packages install from cache — fast!)")
+        if _confirm("  Clear package cache and re-download?", default=False):
+            clear_package_cache()
+    else:
+        console.print(f"  Package cache      : [dim]empty (first flash will populate it)[/dim]")
+    print()
 
     want_win   = _confirm("  Bundle portable Python for Windows? (~400 MB, no Python needed on host)", default=True)
     want_linux = _confirm("  Bundle Linux packages? (~200 MB, no pip install on host)", default=True)
@@ -971,7 +1049,7 @@ def main() -> None:
         console.print("\n[bold]3f.[/bold] Downloading LocalAI binary ...")
         ok = download_localai_binary(usb_root)
         if ok:
-            _ok("LocalAI binary saved to USB/bin/")
+            console.print("  [green]✓[/green] LocalAI binary saved to USB/bin/")
         else:
             console.print("  [yellow]⚠ LocalAI download failed — you can add it later[/yellow]")
 

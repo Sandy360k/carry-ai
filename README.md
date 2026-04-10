@@ -23,13 +23,16 @@ A portable AI assistant that lives on a USB drive. Plug it into any Windows or L
 ## Table of Contents
 
 - [Quick Start](#quick-start)
+- [Scripts Guide](#scripts-guide)
 - [Three Modes](#three-modes)
 - [Features](#features)
+- [USB Self-Hosting](#usb-self-hosting)
 - [Voice Mode](#voice-mode)
 - [API Providers](#api-providers)
 - [Local Models](#local-models)
 - [Agent & Tools](#agent--tools)
 - [Persistent Memory](#persistent-memory)
+- [Desktop App](#desktop-app)
 - [Web UI](#web-ui)
 - [MCP Integration](#mcp-integration)
 - [Plugin System](#plugin-system)
@@ -48,30 +51,26 @@ A portable AI assistant that lives on a USB drive. Plug it into any Windows or L
 
 ### Option 1 — Flash a USB drive (recommended)
 
-Run this on any machine that has Python installed:
+Run this on any machine with Python installed:
 
 ```bash
 python flash_usb.py
 ```
 
-**Works like Rufus.** Detects your USB drives, you pick one, and it:
-- Copies carry-ai onto the USB
-- Downloads and installs all Python packages *onto the USB* (no pip install needed on target machines)
-- Bundles a portable Python interpreter for Windows hosts (no Python needed at all)
-- Optionally downloads GGUF models and voice pipeline deps onto the USB
+**Works like Rufus.** Detects your USB drives, you pick one, and it copies carry-ai, downloads packages, bundles a portable Python for Windows, and optionally downloads GGUF models. After flashing the USB is fully self-contained:
 
-After flashing, the USB is fully self-contained:
+```text
+Windows host  ->  insert USB, double-click start.bat   (no Python required)
+Linux host    ->  insert USB, bash /media/usb/start.sh  (only needs Python 3.10+)
+```
 
-```
-Windows host  →  insert USB, double-click start.bat   (no Python required)
-Linux host    →  insert USB, bash /media/usb/start.sh  (only needs Python 3.10+)
-```
+Repeated flashes are fast -- packages are cached locally after the first run.
 
 ---
 
-### Option 2 — Set up an existing USB (already has carry-ai)
+### Option 2 — Set up an existing USB
 
-If carry-ai is already on the USB and you want to bundle dependencies:
+If carry-ai is already on the USB and you just want to install dependencies:
 
 ```bash
 python setup_usb.py
@@ -79,16 +78,19 @@ python setup_usb.py
 
 ---
 
-### Option 3 — Manual / dev mode
+### Option 3 — Run the onboarding wizard
 
 ```bash
-python onboard.py      # interactive wizard: deps, keys, mode, voice, dry-run
-python launcher.py     # direct launch (uses system Python packages)
+python onboard.py
 ```
 
-**Launcher flags:**
+Walks you through system checks, USB detection (update/overwrite/clean-flash an existing USB), dependency installation, mode selection, API key setup, voice config, and a dry-run validation. Good for first-time setup or when returning to a USB you haven't used in a while.
 
-```
+---
+
+### Option 4 — Direct launch (dev mode)
+
+```bash
 python launcher.py                   # Auto-detect mode and boot
 python launcher.py --dry-run         # Test without USB hardware
 python launcher.py --mode api        # Force API-only mode
@@ -101,6 +103,181 @@ python launcher.py --verbose         # Debug logging
 ```
 
 See [`docs/getting-started.md`](docs/getting-started.md) for the full setup guide.
+
+---
+
+## Scripts Guide
+
+carry-ai has several Python scripts, each with a distinct purpose. Here's when and why to use each one.
+
+### `flash_usb.py` — Flash a USB drive from scratch
+
+**When to use:** You have a blank USB drive (or want to overwrite one) and want a fully self-contained portable AI assistant.
+
+**What it does:**
+
+1. Detects all removable USB drives on your machine
+2. Asks what to bundle: Windows portable Python, Linux packages, LLM provider SDKs, agent tools, voice pipeline, LocalAI binary
+3. Shows the full GGUF model catalogue (14 models, 2 GB to 12 GB) and lets you pick which to download
+4. Copies carry-ai source, installs packages onto the USB, downloads models, writes launcher scripts (`start.bat`, `start.sh`, `autorun.inf`)
+5. Verifies the flash succeeded
+
+**Package caching:** The first flash downloads all packages from PyPI and saves them in a local `.pkg-cache/` directory. Every subsequent flash installs from that cache -- no network needed, much faster.
+
+```bash
+python flash_usb.py                              # Interactive wizard
+python flash_usb.py --add-models --target H:\    # Add models to existing USB
+python flash_usb.py --add-localai --target H:\   # Add LocalAI binary
+```
+
+---
+
+### `onboard.py` — Interactive setup wizard
+
+**When to use:** First-time setup on any machine, or when you want to configure carry-ai from scratch. Also useful for managing an existing USB.
+
+**What it does (8 steps):**
+
+| Step | Name | What happens |
+| ---- | ---- | ------------ |
+| 1 | System Check | Probes Python version, OS, RAM, free disk |
+| 2 | USB Drive Check | Scans for USB drives, detects existing carry-ai installations |
+| 3 | Dependencies | Checks required/optional packages, offers install or update-all |
+| 4 | Mode Selection | Recommends local/api/hybrid based on RAM, models, keys |
+| 5 | Provider Setup | Collects API keys, encrypts them to `config/providers.enc` |
+| 6 | Voice Setup | Configures push-to-talk pipeline (AssemblyAI + ElevenLabs) |
+| 7 | Config & Validate | Writes `config/settings.json`, runs `launcher.py --dry-run` |
+| 8 | Ready | Shows launch commands |
+
+**USB Drive Check (Step 2)** detects existing carry-ai on a plugged-in USB and offers:
+
+- **Update** -- sync source code + update all packages (preserves config, keys, models)
+- **Overwrite** -- replace source code only (preserves everything else)
+- **Clean flash** -- wipe everything for a fresh start
+- **Update deps** -- update packages only, no source changes
+- **Skip** -- continue without touching the USB
+
+**Model download** can be skipped during onboarding -- the wizard shows instructions for downloading later via `flash_usb.py` or `models/downloader.py`.
+
+```bash
+python onboard.py    # Run the full wizard
+```
+
+---
+
+### `launcher.py` — Boot orchestrator (main entry point)
+
+**When to use:** You're ready to run carry-ai. This is what `start.bat` and `start.sh` ultimately call.
+
+**What it does:**
+
+1. Detects OS (Windows/Linux)
+2. Probes RAM via `psutil` (12 tiers from `<3 GB` to `32+ GB`)
+3. Injects session files to temp directory
+4. Selects mode: `local` | `api` | `hybrid` | `auto`
+5. Auto-selects GGUF model if local/hybrid
+6. Decrypts API keys in RAM if api/hybrid
+7. Connects MCP servers, loads plugins
+8. Starts Flask web UI + agent loop at `localhost:8080`
+9. Blocks on USB eject event, then runs cleanup
+
+```bash
+python launcher.py                 # Auto mode
+python launcher.py --dry-run       # Test without USB
+python launcher.py --mode hybrid   # Force hybrid
+python launcher.py --verbose       # Debug output
+```
+
+---
+
+### `setup_usb.py` — USB-side package installer
+
+**When to use:** You manually copied carry-ai onto a USB (without `flash_usb.py`) and need to install packages.
+
+**What it does:** Runs `pip install --target` to install all required packages into the USB's `python-env/` directory. Essentially the package-install portion of `flash_usb.py`, but designed to run from within the USB itself.
+
+```bash
+python setup_usb.py    # Run from USB root
+```
+
+---
+
+### `bootstrap.py` — sys.path injector
+
+**When to use:** You don't run this directly. It's called by `start.bat` / `start.sh`.
+
+**What it does:** Prepends the USB's `python-env/*/site-packages` directory to `sys.path` so that Python finds the USB-resident packages instead of (missing) host packages. Then hands off to `launcher.py`.
+
+---
+
+### `package.py` — USB packaging and distribution
+
+**When to use:** You want to create a distributable carry-ai USB image, optionally with or without models.
+
+```bash
+python package.py --target E:\                    # Package to USB
+python package.py --target E:\ --include-models   # Include GGUF models
+python package.py --target E:\ --strip-models     # API-only (no models)
+python package.py --validate-only --target .       # Validate structure only
+```
+
+---
+
+### `crypto/keystore.py` — API key encryption manager
+
+**When to use:** You want to add, remove, or list encrypted API keys stored on the USB.
+
+```bash
+python crypto/keystore.py setup     # Interactive wizard
+python crypto/keystore.py list      # Show configured providers
+python crypto/keystore.py add openai
+python crypto/keystore.py remove groq
+```
+
+Keys are encrypted with Fernet (AES-128-CBC + HMAC-SHA256, PBKDF2 600k iterations) and stored in `config/providers.enc`.
+
+---
+
+### `models/downloader.py` — GGUF model browser and downloader
+
+**When to use:** You want to search, download, or manage local GGUF models.
+
+```bash
+python models/downloader.py interactive          # Guided wizard
+python models/downloader.py search "Qwen2.5 7B" # Search HuggingFace
+python models/downloader.py suggest --ram 16     # RAM-based suggestion
+python models/downloader.py local                # List downloaded models
+```
+
+---
+
+### Script decision tree
+
+```text
+"I have a blank USB"
+  -> python flash_usb.py
+
+"I have a USB with carry-ai but want to update it"
+  -> python onboard.py  (Step 2 offers update/overwrite/clean)
+  -> or: python flash_usb.py  (re-flash with overwrite prompt)
+
+"I just want to run carry-ai on this machine"
+  -> python onboard.py   (first time)
+  -> python launcher.py  (after setup)
+
+"I need to add/change API keys"
+  -> python crypto/keystore.py setup
+
+"I need to download a model"
+  -> python models/downloader.py interactive
+  -> or: python flash_usb.py --add-models --target H:\
+
+"I want to update packages on the USB"
+  -> python onboard.py  (Step 2: Update deps, or Step 3: Update all)
+
+"I want to update packages in the web UI"
+  -> Settings panel -> Dependencies card -> Update All
+```
 
 ---
 
@@ -160,13 +337,7 @@ USB:/
 
 `start.sh` automatically sets `PYTHONPATH` before launching, so the host machine's site-packages are never touched. `start.bat` calls the bundled `python.exe` directly.
 
-**Scripts:**
-
-| Script | Purpose |
-|--------|---------|
-| `flash_usb.py` | Run on host — detects drives, copies carry-ai, downloads packages + models |
-| `setup_usb.py` | Run from USB — sets up / updates the `python-env/` on an existing USB |
-| `bootstrap.py` | Called by start scripts — injects USB packages into `sys.path` |
+**Package caching:** `flash_usb.py` saves downloaded wheels in a local `.pkg-cache/` directory. The first flash downloads from PyPI; every subsequent flash installs from cache with no network needed. Run `flash_usb.py` and select "Clear package cache" to force a fresh download.
 
 ---
 
@@ -379,7 +550,8 @@ Chat interface at `http://localhost:8080`:
 - **Sidebar panels** — Chat, Memory, Tools, Settings, Logs (all collapsible)
 - **Real-time streaming** — SSE with collapsible tool execution cards
 - **Memory browser** — search, view, and manage stored memories
-- **Settings panel** — live mode switching, provider list, model inventory
+- **Settings panel** — live mode switching, provider list, model inventory, dependency manager
+- **Dependency manager** — view installed/missing packages with versions, one-click "Update All" button
 - **Dark / light theme** — toggle with `Ctrl+K` to focus input
 - **Markdown rendering** — code blocks, headings, lists, links
 
@@ -490,12 +662,14 @@ See [`docs/configuration.md`](docs/configuration.md) for the full settings refer
 
 ## Packaging to USB
 
+See the [Scripts Guide](#scripts-guide) for details on each script. Summary:
+
 ```bash
+python flash_usb.py                              # Full interactive flash (recommended)
+python flash_usb.py --add-models --target H:\    # Add models to existing USB
 python package.py --target E:\                   # Package to USB drive
-python package.py --target ./test --verbose       # Test locally
-python package.py --target E:\ --include-models   # Bundle GGUF models
-python package.py --target E:\ --strip-models     # API-only package
-python package.py --validate-only --target .       # Validate only
+python package.py --target E:\ --include-models  # Bundle GGUF models
+python package.py --validate-only --target .     # Validate structure only
 ```
 
 Generated launchers: `autorun.inf`, `start.bat`, `start.sh`, `carry-ai.desktop`
@@ -504,28 +678,29 @@ Generated launchers: `autorun.inf`, `start.bat`, `start.sh`, `carry-ai.desktop`
 
 ## Project Structure
 
-```
+```text
 carry-ai/
-├── launcher.py              # Entry point: OS detect, RAM probe, boot
-├── onboard.py               # Interactive setup wizard
-├── flash_usb.py             # Rufus-style USB flasher (run on host machine)
-├── setup_usb.py             # USB package env setup (run from USB)
-├── bootstrap.py             # sys.path patcher — injects USB packages
-├── start.bat                # Windows launcher (uses USB-local Python)
+├── launcher.py              # Boot orchestrator — the main entry point
+├── onboard.py               # 8-step interactive setup wizard
+├── flash_usb.py             # Rufus-style USB flasher with package caching
+├── setup_usb.py             # USB-side package installer (run from USB)
+├── bootstrap.py             # sys.path injector — called by start scripts
+├── package.py               # USB packaging and distribution
+├── start.bat                # Windows launcher (uses bundled Python)
 ├── start.sh                 # Linux launcher (injects USB PYTHONPATH)
-├── package.py               # USB packaging
 ├── requirements.txt
-
+├── .pkg-cache/              # (git-ignored) local wheel cache for fast re-flashing
+│
 ├── docs/
 │   ├── getting-started.md   # Zero-to-running guide
 │   ├── configuration.md     # Full settings.json reference
 │   ├── providers.md         # API key setup for all 9 providers
-│   └── architecture.md      # System design & data-flow diagrams
-
+│   └── architecture.md      # System design and data-flow diagrams
+│
 ├── modes/
 │   ├── api_mode.py          # Cloud provider router + health tracking
 │   └── local_mode.py        # llama.cpp subprocess + 12-tier model selection
-
+│
 ├── providers/               # 7 LLM provider integrations
 │   ├── base.py              # Abstract base + exception hierarchy
 │   ├── openai_compat.py     # Shared OpenAI-compatible base
@@ -536,28 +711,29 @@ carry-ai/
 │   ├── openrouter_provider.py
 │   ├── godmode_provider.py  # G0DM0D3 multi-model racing
 │   └── onyx_provider.py     # RAG provider
-
+│
 ├── agent/
 │   ├── agent.py             # ReAct loop, permissions, conversation history
 │   ├── tools.py             # 30+ tools + extensible registry
 │   └── memory.py            # SQLite + FTS5 persistent memory
-
+│
 ├── ui/
-│   └── app.py               # Flask SPA at localhost:8080
-
+│   ├── app.py               # Flask SPA at localhost:8080
+│   └── desktop.py           # Native desktop app (customtkinter/tkinter)
+│
 ├── integrations/
 │   ├── voice_tools.py       # Push-to-talk voice pipeline (clicky port)
 │   ├── scrapling_tools.py   # Adaptive web scraping
 │   ├── gworkspace_tools.py  # Google Workspace API
 │   └── llmfit_advisor.py    # Hardware-aware model selection
-
+│
 ├── mcp/                     # MCP client (stdio/HTTP/SSE)
 ├── plugins/                 # Plugin loader + manager
 ├── cowork/                  # Session sharing + team management
 ├── inject/                  # OS injection (Windows + Linux)
 ├── cleanup/                 # 6-step trace wiper
 ├── models/                  # HuggingFace GGUF downloader
-├── crypto/                  # Fernet keystore
+├── crypto/                  # Fernet keystore (API key encryption)
 └── config/                  # Settings loader + encrypted keys
 ```
 

@@ -15,8 +15,8 @@ This file provides context for AI assistants working in this repository.
 ```
 carry-ai/
 ├── launcher.py              # Single entry point — boot orchestrator
-├── onboard.py               # Interactive setup wizard (run this first)
-├── flash_usb.py             # Rufus-style USB flasher — run on host, writes everything to USB
+├── onboard.py               # 8-step interactive setup wizard (run this first)
+├── flash_usb.py             # Rufus-style USB flasher with local package caching
 ├── setup_usb.py             # USB package env builder — run from USB after copy
 ├── bootstrap.py             # sys.path injector — called by start scripts, prepends USB packages
 ├── start.bat                # Windows launcher — uses python-env\windows\python.exe if present
@@ -378,9 +378,11 @@ USB_ROOT/
 **Boot path on Linux:**
 `start.sh` sets `PYTHONPATH=python-env/linux/site-packages` → `python3 bootstrap.py` → `launcher.main()`
 
-**flash_usb.py** is the host-side "Rufus" equivalent: detects USB drives, copies carry-ai, downloads packages and GGUF models onto the USB, writes start scripts. Run it once on any machine with Python installed to prepare a USB.
+**flash_usb.py** is the host-side "Rufus" equivalent: detects USB drives, copies carry-ai, downloads packages and GGUF models onto the USB, writes start scripts. Run it once on any machine with Python installed to prepare a USB. Packages are cached locally in `.pkg-cache/` after the first run — subsequent flashes install from cache (fast, no network).
 
 **setup_usb.py** is the USB-side alternative: run it from within the USB after manually copying carry-ai. Offers the same package/model download flow.
+
+**onboard.py** is an 8-step interactive wizard: system check, USB drive detection (update/overwrite/clean-flash existing installs), dependency install/update, mode selection, API key setup, voice config, config generation + dry-run validation. Step 2 scans for plugged-in USB drives and checks for existing carry-ai installations. Step 3 offers to update all packages to latest versions.
 
 ---
 
@@ -396,4 +398,6 @@ USB_ROOT/
 8. **Voice pipeline** — `integrations/voice_tools.py` is fully optional; all four deps (pyaudio, assemblyai, elevenlabs, Pillow) are guarded. Never make them required.
 9. **Onboarding** — `onboard.py` uses `rich` for the visual experience but has a complete plain-text fallback; it must run with only stdlib if rich is not yet installed.
 10. **USB self-hosting** — `flash_usb.py` and `setup_usb.py` install packages with `pip install --target` into the USB. `bootstrap.py` injects that directory via `sys.path.insert(0, ...)`. Never assume host site-packages are available; all imports that aren't stdlib should be guarded with try/except.
-11. **Portable Python URL** — Windows embeddable Python is downloaded from `https://www.python.org/ftp/python/{VERSION}/python-{VERSION}-embed-amd64.zip`. The version string in the URL uses dots (e.g. `3.11.9`), not digits concatenated.
+11. **Package caching** — `flash_usb.py` caches downloaded wheels in `.pkg-cache/` (git-ignored). First flash downloads from PyPI; subsequent flashes use `--find-links` for offline installs. The cache is split by platform (`win64/`, `linux/`).
+12. **Web UI dependencies** — `ui/app.py` exposes `GET /api/dependencies` (package status) and `POST /api/dependencies/update` (pip upgrade). The Settings panel has a Dependencies card with an "Update All" button.
+13. **Portable Python URL** — Windows embeddable Python is downloaded from `https://www.python.org/ftp/python/{VERSION}/python-{VERSION}-embed-amd64.zip`. The version string in the URL uses dots (e.g. `3.11.9`), not digits concatenated.

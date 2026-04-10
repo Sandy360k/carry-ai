@@ -22,3 +22,6 @@ config/memory.db
 
 # Dry-run session artifacts
 _dry_run_session/
+
+# Package download cache (local, speeds up repeated flashes)
+.pkg-cache/

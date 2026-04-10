@@ -1130,10 +1130,13 @@ def main() -> None:
     if mode in ("local", "hybrid") and not has_models:
         _print(
             "\n[yellow]No GGUF models found.[/yellow]  "
-            "You need at least one model for local inference."
+            "You need at least one model for local inference.\n"
         )
-        dl = _prompt("Open the model downloader now? [y/N]: ").strip().lower()
-        if dl in ("y", "yes"):
+        _print("  [cyan]1[/cyan]  Open model downloader now")
+        _print("  [cyan]2[/cyan]  Skip — download later with: python models/downloader.py interactive")
+        _print("       or flash models to USB with: python flash_usb.py --add-models\n")
+        dl = _prompt("  Choice [1/2]: ").strip()
+        if dl == "1":
             try:
                 subprocess.run(
                     [sys.executable, "models/downloader.py", "interactive"],
@@ -1142,6 +1145,8 @@ def main() -> None:
                 )
             except Exception as exc:
                 _print(f"[red]Downloader error: {exc}[/red]")
+        else:
+            _print("[dim]Skipping model download. You can add models later.[/dim]")
 
     _print()
 
