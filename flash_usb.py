@@ -121,8 +121,8 @@ GGUF_MODELS = [
         "name": "Phi-4-mini Q4_K_M",
         "ram_gb": 5, "size_gb": 2.4,
         "description": "Strong reasoning + tool calling, 5 GB RAM",
-        "hf_repo": "bartowski/Phi-4-mini-instruct-GGUF",
-        "hf_file": "Phi-4-mini-instruct-Q4_K_M.gguf",
+        "hf_repo": "bartowski/microsoft_Phi-4-mini-instruct-GGUF",
+        "hf_file": "microsoft_Phi-4-mini-instruct-Q4_K_M.gguf",
         "gated": False,
     },
     {
@@ -136,10 +136,10 @@ GGUF_MODELS = [
     {
         "name": "Gemma 4 E4B Q4_K_M",
         "ram_gb": 6, "size_gb": 3.1,
-        "description": "Multimodal vision, 6 GB RAM [needs HF token]",
-        "hf_repo": "bartowski/gemma-4-e4b-GGUF",
-        "hf_file": "gemma-4-e4b-Q4_K_M.gguf",
-        "gated": True,
+        "description": "Multimodal vision, 6 GB RAM",
+        "hf_repo": "bartowski/google_gemma-4-E4B-it-GGUF",
+        "hf_file": "google_gemma-4-E4B-it-Q4_K_M.gguf",
+        "gated": False,
     },
     {
         "name": "Qwen2.5 7B Q4_K_M",
@@ -207,29 +207,24 @@ GGUF_MODELS = [
 # ---------------------------------------------------------------------------
 # LocalAI binary catalogue
 # ---------------------------------------------------------------------------
-LOCALAI_VERSION = "v2.25.0"
+LOCALAI_VERSION = "v4.1.3"
 LOCALAI_BINARIES = {
     "linux_x86_64": {
         "url": (f"https://github.com/mudler/LocalAI/releases/download/"
-                f"{LOCALAI_VERSION}/local-ai-Linux-x86_64"),
+                f"{LOCALAI_VERSION}/local-ai-{LOCALAI_VERSION}-linux-amd64"),
         "filename": "local-ai",
         "size_mb": 300,
         "description": "Linux x86_64 (most desktops/servers)",
     },
     "linux_arm64": {
         "url": (f"https://github.com/mudler/LocalAI/releases/download/"
-                f"{LOCALAI_VERSION}/local-ai-Linux-arm64"),
+                f"{LOCALAI_VERSION}/local-ai-{LOCALAI_VERSION}-linux-arm64"),
         "filename": "local-ai",
         "size_mb": 280,
         "description": "Linux ARM64 (Raspberry Pi 5, Jetson, etc.)",
     },
-    "windows_x86_64": {
-        "url": (f"https://github.com/mudler/LocalAI/releases/download/"
-                f"{LOCALAI_VERSION}/local-ai-Windows-x86_64.exe"),
-        "filename": "local-ai.exe",
-        "size_mb": 310,
-        "description": "Windows 10/11 x86_64",
-    },
+    # No native Windows binary — LocalAI only publishes Linux and macOS builds.
+    # Windows users can run LocalAI via WSL or Docker.
 }
 
 # ---------------------------------------------------------------------------
@@ -581,8 +576,10 @@ def download_localai_binary(usb_root: Path) -> bool:
     Download the LocalAI binary for the current OS and place it in USB/bin/.
 
     The binary is placed at:
-        Windows → USB/bin/local-ai.exe
-        Linux   → USB/bin/local-ai  (chmod +x)
+        Linux → USB/bin/local-ai  (chmod +x)
+
+    Note: LocalAI does not publish native Windows binaries.
+    Windows users should use WSL or Docker.
 
     Returns True on success.
     """
@@ -591,8 +588,14 @@ def download_localai_binary(usb_root: Path) -> bool:
     arch = _platform.machine().lower()
 
     if os_name == "windows":
-        key = "windows_x86_64"
-    elif os_name == "linux" and "arm" in arch or "aarch" in arch:
+        console.print(
+            "  [yellow]![/yellow] LocalAI does not publish native Windows binaries.\n"
+            "  On Windows, use WSL or Docker to run LocalAI.\n"
+            "  The Linux binary will still be bundled for Linux hosts."
+        )
+        # Bundle the Linux x86_64 binary so the USB works on Linux hosts
+        key = "linux_x86_64"
+    elif os_name == "linux" and ("arm" in arch or "aarch" in arch):
         key = "linux_arm64"
     else:
         key = "linux_x86_64"

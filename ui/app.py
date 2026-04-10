@@ -13,6 +13,7 @@ Architecture:
 
 import json
 import logging
+import sys
 import time
 
 try:
@@ -227,6 +228,14 @@ footer { background: var(--bg2); border-top: 1px solid var(--border);
     <h3>Models</h3>
     <div id="models-list">Loading...</div>
   </div>
+  <div class="card">
+    <h3>Dependencies</h3>
+    <div id="deps-list">Loading...</div>
+    <div style="margin-top:8px;display:flex;gap:8px;">
+      <button class="btn" onclick="updateAllDeps()" id="btn-update-deps">Update All</button>
+    </div>
+    <div id="deps-status" style="margin-top:6px;font-size:12px;"></div>
+  </div>
 </div>
 
 <!-- Logs Panel -->
@@ -263,7 +272,7 @@ function switchPanel(panelId) {
   // Load panel data
   if (panelId === 'memory-panel') loadMemory();
   if (panelId === 'tools-panel') loadTools();
-  if (panelId === 'settings-panel') loadSettings();
+  if (panelId === 'settings-panel') { loadSettings(); loadDeps(); }
   if (panelId === 'logs-panel') renderLogs();
 }
 
@@ -468,6 +477,48 @@ async function loadSettings() {
         '</table>'
       : '<span style="color:var(--fg2)">No local models</span>';
   } catch(e) { document.getElementById('providers-list').innerHTML = 'Error'; }
+}
+async function loadDeps() {
+  try {
+    const resp = await fetch('/api/dependencies');
+    const data = await resp.json();
+    const pkgs = data.packages || [];
+    if (!pkgs.length) { document.getElementById('deps-list').innerHTML = 'No data'; return; }
+    let html = '<table><tr><th>Package</th><th>Type</th><th>Status</th><th>Version</th></tr>';
+    pkgs.forEach(p => {
+      const st = p.installed
+        ? '<span style="color:var(--green)">installed</span>'
+        : (p.required ? '<span style="color:#e74c3c">missing</span>' : '<span style="color:var(--fg2)">not installed</span>');
+      html += `<tr><td><code>${escHtml(p.package)}</code></td>
+        <td style="font-size:11px">${p.required?'required':'optional'}</td>
+        <td>${st}</td>
+        <td style="font-size:11px;color:var(--fg2)">${p.version||'-'}</td></tr>`;
+    });
+    html += '</table>';
+    document.getElementById('deps-list').innerHTML = html;
+  } catch(e) { document.getElementById('deps-list').innerHTML = 'Error loading'; }
+}
+async function updateAllDeps() {
+  const btn = document.getElementById('btn-update-deps');
+  const status = document.getElementById('deps-status');
+  btn.disabled = true; btn.textContent = 'Updating...';
+  status.innerHTML = '<span style="color:var(--fg2)">Updating packages, this may take a minute...</span>';
+  logActivity('Updating all dependencies...');
+  try {
+    const resp = await fetch('/api/dependencies/update', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({})});
+    const data = await resp.json();
+    const results = data.results || [];
+    const ok = results.filter(r => r.success).length;
+    const fail = results.filter(r => !r.success).length;
+    status.innerHTML = `<span style="color:var(--green)">${ok} updated</span>` +
+      (fail ? `, <span style="color:#e74c3c">${fail} failed</span>` : '');
+    logActivity(`Dependencies updated: ${ok} ok, ${fail} failed`);
+    loadDeps();
+  } catch(e) {
+    status.innerHTML = '<span style="color:#e74c3c">Update failed: ' + escHtml(e.message) + '</span>';
+    logActivity('Dependency update failed: ' + e.message);
+  }
+  btn.disabled = false; btn.textContent = 'Update All';
 }
 async function switchMode(mode) {
   try {
@@ -738,6 +789,59 @@ def create_app(agent=None, config=None):
             return jsonify({"stored": None, "note": "Deduplicated"})
         except Exception as e:
             return jsonify({"error": str(e)}), 500
+
+    # ------------------------------------------------------------------
+    # Dependencies API
+    # ------------------------------------------------------------------
+
+    REQUIRED_PACKAGES = [
+        ("psutil", "psutil"), ("cryptography", "cryptography"),
+        ("flask", "flask"), ("requests", "requests"), ("rich", "rich"),
+    ]
+    OPTIONAL_PACKAGES = [
+        ("anthropic", "anthropic"), ("openai", "openai"),
+        ("google.auth", "google-auth"), ("huggingface_hub", "huggingface_hub"),
+        ("pyautogui", "pyautogui"), ("pyperclip", "pyperclip"),
+        ("pyaudio", "pyaudio"), ("assemblyai", "assemblyai"),
+        ("elevenlabs", "elevenlabs"),
+    ]
+
+    @app.route("/api/dependencies")
+    def api_dependencies():
+        import importlib
+        results = []
+        for module, pkg in REQUIRED_PACKAGES + OPTIONAL_PACKAGES:
+            is_required = any(pkg == p for _, p in REQUIRED_PACKAGES)
+            try:
+                mod = importlib.import_module(module)
+                version = getattr(mod, "__version__", getattr(mod, "VERSION", "installed"))
+                results.append({"package": pkg, "module": module, "installed": True,
+                                "version": str(version), "required": is_required})
+            except ImportError:
+                results.append({"package": pkg, "module": module, "installed": False,
+                                "version": None, "required": is_required})
+        return jsonify({"packages": results})
+
+    @app.route("/api/dependencies/update", methods=["POST"])
+    def api_dependencies_update():
+        import subprocess as _sp
+        data = request.get_json(silent=True) or {}
+        packages = data.get("packages", [])
+        if not packages:
+            # Update all installed
+            packages = [pkg for _, pkg in REQUIRED_PACKAGES + OPTIONAL_PACKAGES]
+        results = []
+        for pkg in packages:
+            try:
+                r = _sp.run(
+                    [sys.executable, "-m", "pip", "install", "--upgrade", "-q", pkg],
+                    capture_output=True, text=True, timeout=120,
+                )
+                results.append({"package": pkg, "success": r.returncode == 0,
+                                "error": r.stderr.strip() if r.returncode else None})
+            except Exception as e:
+                results.append({"package": pkg, "success": False, "error": str(e)})
+        return jsonify({"results": results})
 
     # ------------------------------------------------------------------
     # MCP servers (placeholder)

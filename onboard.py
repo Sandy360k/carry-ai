@@ -17,6 +17,8 @@ import getpass
 import json
 import os
 import platform
+import re as _re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -115,6 +117,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent
 
 STEPS = [
     "System Check",
+    "USB Drive Check",
     "Dependencies",
     "Mode Selection",
     "Provider Setup",
@@ -286,7 +289,305 @@ def check_system() -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Step 2: Dependencies
+# Step 2: USB Drive Check
+# ---------------------------------------------------------------------------
+
+
+def _detect_usb_drives() -> list[dict]:
+    """Detect removable USB drives. Reuses logic from flash_usb.py."""
+    drives: list[dict] = []
+    try:
+        import psutil as _psutil
+        for part in _psutil.disk_partitions(all=False):
+            is_removable = False
+            opts = part.opts.lower() if part.opts else ""
+            if platform.system().lower() == "windows":
+                is_removable = "removable" in opts
+            else:
+                dev = part.device
+                block = _re.sub(r'\d+$', '', dev.replace('/dev/', ''))
+                removable_path = Path(f"/sys/block/{block}/removable")
+                if removable_path.exists():
+                    is_removable = removable_path.read_text().strip() == "1"
+            if not is_removable:
+                continue
+            try:
+                usage = _psutil.disk_usage(part.mountpoint)
+                total_gb = usage.total / (1024 ** 3)
+                free_gb = usage.free / (1024 ** 3)
+            except (PermissionError, OSError):
+                total_gb = free_gb = 0.0
+            # Get volume label on Windows
+            label = Path(part.mountpoint).name or "USB"
+            if platform.system().lower() == "windows":
+                try:
+                    import ctypes
+                    buf = ctypes.create_unicode_buffer(1024)
+                    ctypes.windll.kernel32.GetVolumeInformationW(
+                        part.mountpoint, buf, ctypes.sizeof(buf),
+                        None, None, None, None, 0,
+                    )
+                    if buf.value:
+                        label = buf.value
+                except Exception:
+                    pass
+            drives.append({
+                "mountpoint": part.mountpoint,
+                "label": label,
+                "total_gb": total_gb,
+                "free_gb": free_gb,
+            })
+    except ImportError:
+        # psutil not available — try common mount points
+        candidates = []
+        if platform.system().lower() == "windows":
+            import string
+            for letter in string.ascii_uppercase:
+                mp = f"{letter}:\\"
+                if os.path.exists(mp) and mp != os.path.splitdrive(sys.executable)[0] + "\\":
+                    candidates.append(mp)
+        else:
+            for base in ["/media", "/mnt", "/run/media"]:
+                if os.path.isdir(base):
+                    for sub in Path(base).iterdir():
+                        candidates.append(str(sub))
+        for mp in candidates:
+            try:
+                usage = shutil.disk_usage(mp)
+                drives.append({
+                    "mountpoint": mp,
+                    "label": Path(mp).name or mp,
+                    "total_gb": usage.total / (1024 ** 3),
+                    "free_gb": usage.free / (1024 ** 3),
+                })
+            except OSError:
+                pass
+    return drives
+
+
+def _check_carry_ai(usb_path: Path) -> dict:
+    """Check what carry-ai components exist on a USB drive."""
+    result = {
+        "has_carry_ai": False,
+        "has_launcher": False,
+        "has_settings": False,
+        "has_keys": False,
+        "has_models": False,
+        "has_python_win": False,
+        "has_linux_pkgs": False,
+        "model_count": 0,
+    }
+    carry_dir = usb_path / "carry-ai"
+    if not carry_dir.exists():
+        return result
+    result["has_carry_ai"] = True
+    result["has_launcher"] = (carry_dir / "launcher.py").exists()
+    result["has_settings"] = (carry_dir / "config" / "settings.json").exists()
+    result["has_keys"] = (carry_dir / "config" / "providers.enc").exists()
+    models_dir = usb_path / "models"
+    if models_dir.exists():
+        gguf_files = list(models_dir.glob("**/*.gguf"))
+        result["has_models"] = len(gguf_files) > 0
+        result["model_count"] = len(gguf_files)
+    result["has_python_win"] = (usb_path / "python-env" / "windows" / "python.exe").exists()
+    result["has_linux_pkgs"] = (usb_path / "python-env" / "linux" / "site-packages").exists()
+    return result
+
+
+def _sync_source(usb_path: Path) -> bool:
+    """Copy carry-ai source to USB, preserving config and models."""
+    src = PROJECT_ROOT
+    dest = usb_path / "carry-ai"
+    _print(f"\n[cyan]Syncing carry-ai source → {dest}[/cyan]")
+
+    # Directories/files to skip (user data on USB)
+    skip = {"__pycache__", ".git", ".claude", "config"}
+
+    count = 0
+    for item in src.iterdir():
+        if item.name in skip:
+            continue
+        dest_item = dest / item.name
+        try:
+            if item.is_dir():
+                if dest_item.exists():
+                    shutil.rmtree(str(dest_item))
+                shutil.copytree(str(item), str(dest_item))
+            else:
+                shutil.copy2(str(item), str(dest_item))
+            count += 1
+        except Exception as exc:
+            _print(f"  [red]Error copying {item.name}: {exc}[/red]")
+    _print(f"  {TICK} Synced {count} items.")
+    return True
+
+
+def _update_usb_dependencies(usb_path: Path) -> bool:
+    """Reinstall/update Python packages on the USB drive."""
+    _print("\n[cyan]Updating packages on USB...[/cyan]")
+    all_packages = [pkg for _, pkg in REQUIRED_PACKAGES] + [pkg for _, pkg in OPTIONAL_PACKAGES]
+
+    # Update Windows portable Python packages if present
+    win_python = usb_path / "python-env" / "windows" / "python.exe"
+    if win_python.exists():
+        _print("\n  [bold]Windows portable Python:[/bold]")
+        for pkg in all_packages:
+            _print(f"    Updating {pkg}...", end="")
+            try:
+                result = subprocess.run(
+                    [str(win_python), "-m", "pip", "install", "--upgrade",
+                     "--no-warn-script-location", "-q", pkg],
+                    capture_output=True, text=True, check=False,
+                )
+                if result.returncode == 0:
+                    _print(f" {TICK}")
+                else:
+                    _print(f" [yellow]skip[/yellow]")
+            except Exception:
+                _print(f" [yellow]skip[/yellow]")
+
+    # Update Linux site-packages if present
+    linux_sp = usb_path / "python-env" / "linux" / "site-packages"
+    if linux_sp.exists():
+        _print("\n  [bold]Linux packages:[/bold]")
+        for pkg in all_packages:
+            _print(f"    Updating {pkg}...", end="")
+            try:
+                result = subprocess.run(
+                    [sys.executable, "-m", "pip", "install", "--upgrade",
+                     "--target", str(linux_sp), "-q", pkg],
+                    capture_output=True, text=True, check=False,
+                )
+                if result.returncode == 0:
+                    _print(f" {TICK}")
+                else:
+                    _print(f" [yellow]skip[/yellow]")
+            except Exception:
+                _print(f" [yellow]skip[/yellow]")
+
+    _print(f"\n  {TICK} Dependency update complete.")
+    return True
+
+
+def _clean_flash(usb_path: Path) -> None:
+    """Wipe carry-ai data from USB for a clean re-flash."""
+    _print(f"\n[yellow]Cleaning carry-ai from {usb_path}...[/yellow]")
+    for name in ["carry-ai", "python-env", "models", "bin",
+                  "start.bat", "start.sh", "autorun.inf"]:
+        target = usb_path / name
+        if target.is_dir():
+            shutil.rmtree(str(target))
+            _print(f"  Removed {name}/")
+        elif target.is_file():
+            target.unlink()
+            _print(f"  Removed {name}")
+    _print(f"  {TICK} USB cleaned. Run [bold]python flash_usb.py[/bold] to re-flash.")
+
+
+def check_usb_drives() -> dict | None:
+    """
+    Step 2: Detect USB drives, check for existing carry-ai installation,
+    and offer update / overwrite / clean flash options.
+
+    Returns the USB info dict if a drive was selected, or None.
+    """
+    drives = _detect_usb_drives()
+
+    if not drives:
+        _print("[dim]No removable USB drives detected — skipping USB check.[/dim]")
+        _print("[dim]If your drive is not detected, run:[/dim]")
+        _print("[dim]  python flash_usb.py[/dim]\n")
+        return None
+
+    # Show detected drives
+    _print("[bold]Detected USB Drives[/bold]")
+    rows = []
+    for i, d in enumerate(drives, 1):
+        rows.append([
+            str(i),
+            d["label"],
+            d["mountpoint"],
+            f"{d['total_gb']:.1f} GB",
+            f"{d['free_gb']:.1f} GB",
+        ])
+    _table(["#", "Label", "Mount", "Total", "Free"], rows)
+    _print()
+
+    choice = _prompt("  Check a drive for carry-ai? (number, or Enter to skip): ").strip()
+    if not choice:
+        _print("[dim]Skipping USB check.[/dim]\n")
+        return None
+
+    try:
+        idx = int(choice) - 1
+        drive = drives[idx]
+    except (ValueError, IndexError):
+        _print("[yellow]Invalid selection — skipping USB check.[/yellow]\n")
+        return None
+
+    usb_path = Path(drive["mountpoint"])
+    info = _check_carry_ai(usb_path)
+
+    if not info["has_carry_ai"]:
+        _print(f"\n  No carry-ai found on [bold]{usb_path}[/bold].")
+        _print("  Use [bold]python flash_usb.py[/bold] to flash this drive.\n")
+        return {"path": usb_path, "info": info, "action": None}
+
+    # Found existing install — show status
+    _print(f"\n[bold]Existing carry-ai found on {usb_path}[/bold]")
+    status_rows = [
+        ["Source code", TICK if info["has_launcher"] else CROSS],
+        ["Settings", TICK if info["has_settings"] else WARN],
+        ["Encrypted keys", TICK if info["has_keys"] else WARN],
+        ["GGUF models", f"{info['model_count']} model(s)" if info["has_models"] else "None"],
+        ["Windows Python", TICK if info["has_python_win"] else CROSS],
+        ["Linux packages", TICK if info["has_linux_pkgs"] else CROSS],
+    ]
+    _table(["Component", "Status"], status_rows)
+    _print()
+
+    _print("[bold]What would you like to do?[/bold]")
+    _print("  [cyan]1[/cyan]  Update      — sync source code + update dependencies (keeps config, keys, models)")
+    _print("  [cyan]2[/cyan]  Overwrite   — replace source code only (keeps config, keys, models)")
+    _print("  [cyan]3[/cyan]  Clean flash — wipe everything and re-flash from scratch")
+    _print("  [cyan]4[/cyan]  Update deps — update packages only (no source code changes)")
+    _print("  [cyan]s[/cyan]  Skip        — continue onboarding without changes")
+    _print()
+
+    action = _prompt("  Choice [1/2/3/4/s]: ").strip().lower()
+
+    if action == "1":
+        _sync_source(usb_path)
+        _update_usb_dependencies(usb_path)
+        return {"path": usb_path, "info": info, "action": "update"}
+
+    elif action == "2":
+        _sync_source(usb_path)
+        _print(f"\n  {TICK} Source code overwritten. Config, keys, and models preserved.")
+        return {"path": usb_path, "info": info, "action": "overwrite"}
+
+    elif action == "3":
+        _print()
+        _print("[bold red]WARNING: This will delete ALL carry-ai data on the USB![/bold red]")
+        _print("  This includes: source code, packages, models, settings, and keys.")
+        confirm = _prompt("  Type 'yes' to confirm: ").strip().lower()
+        if confirm == "yes":
+            _clean_flash(usb_path)
+        else:
+            _print("[dim]Clean flash cancelled.[/dim]")
+        return {"path": usb_path, "info": info, "action": "clean"}
+
+    elif action == "4":
+        _update_usb_dependencies(usb_path)
+        return {"path": usb_path, "info": info, "action": "deps"}
+
+    else:
+        _print("[dim]Skipping USB changes.[/dim]\n")
+        return {"path": usb_path, "info": info, "action": None}
+
+
+# ---------------------------------------------------------------------------
+# Step 3: Dependencies
 # ---------------------------------------------------------------------------
 
 
@@ -754,9 +1055,19 @@ def main() -> None:
         sys.exit(1)
 
     # ------------------------------------------------------------------
-    # Step 2 — Dependencies
+    # Step 2 — USB Drive Check
     # ------------------------------------------------------------------
     print_step_header(2, STEPS[1])
+    usb_result = check_usb_drives()
+
+    if usb_result and usb_result.get("action") == "clean":
+        _print("\n[bold]USB wiped. Re-run [cyan]python flash_usb.py[/cyan] to flash it.[/bold]")
+        _print("Continuing onboarding for local setup...\n")
+
+    # ------------------------------------------------------------------
+    # Step 3 — Dependencies
+    # ------------------------------------------------------------------
+    print_step_header(3, STEPS[2])
     dep_info = check_dependencies()
 
     if dep_info["missing_required"]:
@@ -764,10 +1075,33 @@ def main() -> None:
     else:
         _print("[green]All required packages are present.[/green]\n")
 
+    # Offer to update all deps (required + optional) even if none missing
+    if not dep_info["missing_required"]:
+        _print("[dim]Tip: You can also update all packages to their latest versions.[/dim]")
+        upd = _prompt("  Update all packages now? [y/N]: ").strip().lower()
+        if upd in ("y", "yes"):
+            all_pkgs = ([p for _, p in REQUIRED_PACKAGES]
+                        + [p for _, p in OPTIONAL_PACKAGES])
+            _print("\n[cyan]Updating packages...[/cyan]")
+            for pkg in all_pkgs:
+                _print(f"  Updating {pkg}...", end="")
+                try:
+                    result = subprocess.run(
+                        [sys.executable, "-m", "pip", "install", "--upgrade", "-q", pkg],
+                        capture_output=True, text=True, check=False,
+                    )
+                    if result.returncode == 0:
+                        _print(f" {TICK}")
+                    else:
+                        _print(f" [yellow]skip[/yellow]")
+                except Exception:
+                    _print(f" [yellow]skip[/yellow]")
+            _print(f"\n{TICK} Package update complete.\n")
+
     # ------------------------------------------------------------------
-    # Step 3 — Mode Selection
+    # Step 4 — Mode Selection
     # ------------------------------------------------------------------
-    print_step_header(3, STEPS[2])
+    print_step_header(4, STEPS[3])
 
     # Detect whether any .gguf model files are present under models/
     models_dir = PROJECT_ROOT / "models"
@@ -782,9 +1116,9 @@ def main() -> None:
     mode = select_mode(sys_info["ram_gb"], has_models, has_keys)
 
     # ------------------------------------------------------------------
-    # Step 4 — Provider / Model Setup
+    # Step 5 — Provider / Model Setup
     # ------------------------------------------------------------------
-    print_step_header(4, STEPS[3])
+    print_step_header(5, STEPS[4])
 
     if mode in ("api", "hybrid"):
         _print("Cloud provider keys are needed for API/Hybrid mode.\n")
@@ -812,22 +1146,22 @@ def main() -> None:
     _print()
 
     # ------------------------------------------------------------------
-    # Step 5 — Voice Setup
+    # Step 6 — Voice Setup
     # ------------------------------------------------------------------
-    print_step_header(5, STEPS[4])
+    print_step_header(6, STEPS[5])
     voice_config = setup_voice_mode()
 
     # ------------------------------------------------------------------
-    # Step 6 — Config & Validate
+    # Step 7 — Config & Validate
     # ------------------------------------------------------------------
-    print_step_header(6, STEPS[5])
+    print_step_header(7, STEPS[6])
     generate_config(mode, voice_config)
     run_validation()
 
     # ------------------------------------------------------------------
-    # Step 7 — Ready
+    # Step 8 — Ready
     # ------------------------------------------------------------------
-    print_step_header(7, STEPS[6])
+    print_step_header(8, STEPS[7])
     port = 8080
     voice_enabled = bool(voice_config.get("enabled"))
     print_summary(mode, port, voice_enabled)
