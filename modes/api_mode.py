@@ -63,6 +63,10 @@ class ProviderHealth:
         self.total_requests += 1
         self.successful_requests += 1
         self.last_success_time = time.monotonic()
+        # A successful call proves credentials work again — clear the
+        # auth-error flag so a past transient 401/403 doesn't disable
+        # the provider permanently.
+        self.auth_errors = 0
         self._latencies.append(latency_ms)
         # Rolling average over last 20 requests
         if len(self._latencies) > 20:

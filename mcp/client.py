@@ -115,18 +115,31 @@ class StdioTransport:
                 self._proc.stdin.write(req.encode("utf-8"))
                 self._proc.stdin.flush()
 
-                # Read response line
-                line = self._proc.stdout.readline()
-                if not line:
-                    raise RuntimeError("MCP server closed stdout")
+                # Read until we get the response matching our request id.
+                # Servers may interleave notifications (no "id") or
+                # server-initiated requests on stdout — skip those.
+                while True:
+                    line = self._proc.stdout.readline()
+                    if not line:
+                        raise RuntimeError("MCP server closed stdout")
 
-                resp = json.loads(line.decode("utf-8"))
+                    try:
+                        resp = json.loads(line.decode("utf-8"))
+                    except json.JSONDecodeError:
+                        logger.debug("Skipping non-JSON stdout line from '%s'",
+                                     self.config.name)
+                        continue
 
-                if "error" in resp:
-                    err = resp["error"]
-                    raise RuntimeError(f"MCP error {err.get('code')}: {err.get('message')}")
+                    if resp.get("id") != msg_id or "method" in resp:
+                        logger.debug("Skipping non-matching message from '%s': %s",
+                                     self.config.name, resp.get("method", resp.get("id")))
+                        continue
 
-                return resp.get("result", {})
+                    if "error" in resp:
+                        err = resp["error"]
+                        raise RuntimeError(f"MCP error {err.get('code')}: {err.get('message')}")
+
+                    return resp.get("result", {})
 
             except (BrokenPipeError, OSError) as e:
                 raise RuntimeError(f"MCP transport error: {e}") from e

@@ -349,8 +349,17 @@ def boot(args: argparse.Namespace) -> None:
     # --- Load plugins ---
     plugin_tools = _load_plugins(args.dry_run)
 
+    # --- Agent settings (settings.json / CARRY_AI_* env vars) ---
+    permission_mode = "ask"
+    try:
+        from config.settings import load_settings
+        permission_mode = load_settings().agent.get("permission_mode", "ask")
+    except Exception as e:
+        log.warning("Could not load settings (using permission_mode=ask): %s", e)
+
     # --- Build context for agent ---
     boot_context = {
+        "permission_mode": permission_mode,
         "host_os": host_os,
         "ram_gb": ram_gb,
         "mode": mode,

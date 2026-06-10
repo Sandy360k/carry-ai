@@ -221,19 +221,27 @@ class PermissionPolicy:
     """Controls which tool calls require user confirmation.
 
     Modes:
-        'permissive' — execute everything without asking
-        'ask'        — prompt user before destructive commands (default)
-        'strict'     — prompt user before every tool call
+        'permissive' / 'yolo' — execute everything without asking
+        'ask'                 — prompt user before destructive commands (default)
+        'safe'                — block destructive operations outright (no prompt)
+        'strict'              — prompt user before every tool call
     """
+
+    # settings.json uses ask|yolo|safe; normalize to internal names
+    _MODE_ALIASES = {"yolo": "permissive"}
 
     def __init__(self, mode: str = "ask", confirm_fn: Optional[Callable] = None):
         """
         Args:
-            mode: 'permissive', 'ask', or 'strict'.
+            mode: 'permissive'/'yolo', 'ask', 'safe', or 'strict'.
             confirm_fn: Function that prompts user and returns True/False.
                         Signature: confirm_fn(tool_name, args, reason) -> bool
                         If None, uses stdin prompt.
         """
+        mode = self._MODE_ALIASES.get(mode, mode)
+        if mode not in ("permissive", "ask", "safe", "strict"):
+            log.warning("Unknown permission mode %r — falling back to 'ask'", mode)
+            mode = "ask"
         self.mode = mode
         self._confirm_fn = confirm_fn or self._default_confirm
 
@@ -251,18 +259,22 @@ class PermissionPolicy:
             allowed = self._confirm_fn(tool_name, args, reason)
             return allowed, "" if allowed else "User denied"
 
-        # 'ask' mode — only prompt for dangerous operations
+        # 'ask' prompts for dangerous operations; 'safe' blocks them outright
         if tool_name == "shell":
             command = args.get("command", "")
             if _DANGEROUS_RE.search(command):
+                if self.mode == "safe":
+                    return False, f"Blocked destructive command (safe mode): {command[:100]}"
                 reason = f"Potentially destructive command: {command[:100]}"
                 allowed = self._confirm_fn(tool_name, args, reason)
                 return allowed, "" if allowed else "User denied destructive command"
 
-        if tool_name == "write_file":
+        if tool_name in ("write_file", "edit_file"):
             # Check if overwriting an existing file outside session
             path = args.get("path", "")
             if Path(path).exists() and "ai_session" not in path:
+                if self.mode == "safe":
+                    return False, f"Blocked overwrite of existing file (safe mode): {path}"
                 reason = f"Overwrite existing file: {path}"
                 allowed = self._confirm_fn(tool_name, args, reason)
                 return allowed, "" if allowed else "User denied file overwrite"
@@ -329,7 +341,7 @@ class Agent:
             budget = 100_000  # API models have large context
 
         self._history = ConversationHistory(system_prompt, context_budget=budget)
-        self._policy = PermissionPolicy(mode="ask")
+        self._policy = PermissionPolicy(mode=self._context.get("permission_mode", "ask"))
         self._runner = None   # LocalRunner or APIRouter — initialized lazily
         self._total_turns = 0
 
@@ -593,8 +605,8 @@ class Agent:
         yield {"type": "done", "data": None}
 
     def set_permission_mode(self, mode: str) -> None:
-        """Change permission policy: 'permissive', 'ask', 'strict'."""
-        self._policy = PermissionPolicy(mode=mode)
+        """Change permission policy: 'permissive'/'yolo', 'ask', 'safe', 'strict'."""
+        self._policy = PermissionPolicy(mode=mode, confirm_fn=self._policy._confirm_fn)
         log.info("Permission mode set to: %s", mode)
 
     def set_confirm_fn(self, fn: callable) -> None:

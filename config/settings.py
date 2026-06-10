@@ -117,7 +117,9 @@ class Settings:
     """
 
     def __init__(self, data: dict = None, config_path: str = None):
-        object.__setattr__(self, "_data", data or deepcopy(DEFAULTS))
+        # `data if data is not None` — an empty dict is a valid settings node
+        # (e.g. settings.mcp.servers); `or` would silently swap in DEFAULTS.
+        object.__setattr__(self, "_data", data if data is not None else deepcopy(DEFAULTS))
         object.__setattr__(self, "_config_path", config_path)
 
     # -- Dot access --------------------------------------------------------

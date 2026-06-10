@@ -273,7 +273,7 @@ def pick_drive(explicit_target: Optional[str] = None) -> Optional[Path]:
         if (target / "launcher.py").exists():
             return target  # already pointing at carry-ai dir
         _err(f"No carry-ai installation found at '{target}'.")
-        _info("Expected: {target}/carry-ai/launcher.py  OR  {target}/launcher.py")
+        _info(f"Expected: {target}/carry-ai/launcher.py  OR  {target}/launcher.py")
         return None
 
     drives = detect_usb_drives()

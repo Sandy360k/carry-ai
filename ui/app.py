@@ -317,8 +317,8 @@ function formatContent(text) {
   text = text.replace(/\*(.+?)\*/g, '<em>$1</em>');
   // Lists
   text = text.replace(/^- (.+)$/gm, '&bull; $1');
-  // Links
-  text = text.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" style="color:var(--green)">$1</a>');
+  // Links — only http(s) targets; anything else (javascript:, data:) stays plain text
+  text = text.replace(/\[([^\]]+)\]\((https?:\/\/[^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer" style="color:var(--green)">$1</a>');
   return text;
 }
 
