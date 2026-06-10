@@ -383,13 +383,15 @@ class LlamaServer:
         cmd = self.build_command()
         log.info("Starting llama-server: %s", " ".join(cmd))
 
-        # Suppress llama.cpp's verbose output unless in debug mode
-        stderr_target = None if log.isEnabledFor(logging.DEBUG) else subprocess.DEVNULL
+        # Suppress llama.cpp's verbose output unless in debug mode.
+        # stdout must not be PIPE: nothing drains it, so the server would
+        # block once the OS pipe buffer fills.
+        output_target = None if log.isEnabledFor(logging.DEBUG) else subprocess.DEVNULL
 
         self.process = subprocess.Popen(
             cmd,
-            stdout=subprocess.PIPE,
-            stderr=stderr_target,
+            stdout=output_target,
+            stderr=output_target,
             # Don't inherit stdin — server doesn't need it
             stdin=subprocess.DEVNULL,
         )

@@ -433,9 +433,10 @@ def detect_host_ram() -> float:
     if psutil is not None:
         return psutil.virtual_memory().available / (1024 ** 3)
     try:
-        for line in open("/proc/meminfo"):
-            if line.startswith("MemAvailable:"):
-                return int(line.split()[1]) / (1024 ** 2)
+        with open("/proc/meminfo") as f:
+            for line in f:
+                if line.startswith("MemAvailable:"):
+                    return int(line.split()[1]) / (1024 ** 2)
     except OSError:
         pass
     return 8.0
@@ -564,9 +565,13 @@ def setup_portable_python_windows(win_env_dir: Path) -> bool:
     get_pip_dest = win_env_dir / "get-pip.py"
     if not download_file_with_progress(GET_PIP_URL, get_pip_dest, "get-pip.py"):
         return False
-    subprocess.run([str(python_exe), str(get_pip_dest), "--no-warn-script-location", "-q"],
-                   check=False)
+    result = subprocess.run([str(python_exe), str(get_pip_dest), "--no-warn-script-location", "-q"],
+                            check=False, capture_output=True, text=True)
     get_pip_dest.unlink(missing_ok=True)
+    if result.returncode != 0:
+        console.print(f"  [red]✗ pip install into portable Python failed:[/red] "
+                      f"{(result.stderr or result.stdout)[-300:]}")
+        return False
 
     console.print(f"  [green]✓[/green] Portable Python ready.")
     return python_exe.exists()
@@ -968,7 +973,7 @@ def main() -> None:
         console.print("\n[bold]3f.[/bold] Downloading LocalAI binary ...")
         ok = download_localai_binary(usb_root)
         if ok:
-            _ok("LocalAI binary saved to USB/bin/")
+            console.print("  [green]✓[/green] LocalAI binary saved to USB/bin/")
         else:
             console.print("  [yellow]⚠ LocalAI download failed — you can add it later[/yellow]")
 

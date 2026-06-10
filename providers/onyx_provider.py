@@ -50,6 +50,7 @@ from providers.base import (
     ProviderError,
     RateLimitError,
     AuthenticationError,
+    OverloadedError,
 )
 
 log = logging.getLogger("carry-ai.providers.onyx")
@@ -182,10 +183,12 @@ class OnyxProvider(BaseProvider):
         except _requests.Timeout:
             raise ProviderError("onyx: request timed out", provider="onyx")
 
-        if resp.status_code == 401:
+        if resp.status_code in (401, 403):
             raise AuthenticationError("onyx: invalid API key", provider="onyx")
         if resp.status_code == 429:
             raise RateLimitError("onyx: rate limited", provider="onyx")
+        if resp.status_code in (503, 529):
+            raise OverloadedError("onyx: service overloaded", provider="onyx")
         if resp.status_code != 200:
             raise ProviderError(
                 f"onyx: HTTP {resp.status_code}: {resp.text[:200]}",

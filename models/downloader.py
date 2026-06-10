@@ -279,6 +279,12 @@ class _RequestsBackend:
         resp = self._req.get(url, headers=headers, stream=True, timeout=60)
         resp.raise_for_status()
 
+        # If the server ignored the Range header (200 instead of 206) it is
+        # sending the whole file — appending would corrupt the target.
+        if existing_size > 0 and resp.status_code != 206:
+            logger.info("Server does not support resume — restarting download")
+            existing_size = 0
+
         total = int(resp.headers.get("content-length", 0)) + existing_size
         mode = "ab" if existing_size > 0 else "wb"
         downloaded = existing_size
