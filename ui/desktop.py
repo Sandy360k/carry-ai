@@ -78,15 +78,15 @@ LIGHT = {
 
 PROVIDERS = [
     {"name": "Anthropic (Claude)", "key": "anthropic",
-     "models": ["claude-sonnet-4-6", "claude-opus-4-6", "claude-haiku-4-5"]},
+     "models": ["claude-opus-5", "claude-sonnet-5", "claude-haiku-4-5", "claude-fable-5-1"]},
     {"name": "OpenAI", "key": "openai",
-     "models": ["gpt-4o", "o4-mini", "o3"]},
+     "models": ["gpt-6-luna", "gpt-6-sol", "gpt-6-astra"]},
     {"name": "Google (Gemini)", "key": "google",
-     "models": ["gemini-2.5-flash", "gemini-2.5-pro", "gemini-2.0-flash"]},
+     "models": ["gemini-3.5-flash-lite", "gemini-3.8-flash", "gemini-3.1-pro-preview"]},
     {"name": "Groq", "key": "groq",
-     "models": ["llama-3.3-70b-versatile", "mixtral-8x7b-32768"]},
+     "models": ["openai/gpt-oss-20b", "openai/gpt-oss-120b", "qwen/qwen3.8-27b"]},
     {"name": "OpenRouter", "key": "openrouter",
-     "models": ["auto"]},
+     "models": ["openrouter/free", "openrouter/auto", "google/gemma-4-31b-it:free"]},
     {"name": "Local (llama.cpp)", "key": "local",
      "models": ["auto-detect"]},
 ]
@@ -122,6 +122,10 @@ class Conversation:
 # ---------------------------------------------------------------------------
 class ChatBackend:
     """Manages LLM inference in background threads."""
+
+    # Keys already decrypted by launcher.py for this session (in RAM only),
+    # so the user is not asked for the passphrase again on every message.
+    preloaded_keys: dict = {}
 
     def __init__(self):
         self.response_queue: queue.Queue = queue.Queue()
@@ -197,6 +201,8 @@ class ChatBackend:
             return f"Provider error ({provider_key}): {e}"
 
     def _get_key(self, name: str) -> str | None:
+        if self.preloaded_keys.get(name):
+            return self.preloaded_keys[name]
         env = os.environ.get(f"CARRY_AI_{name.upper()}_KEY")
         if env:
             return env
@@ -224,8 +230,10 @@ class CarryAIApp:
 
         # Chat history
         self._conversations: list[Conversation] = []
-        self._active_conv: Conversation | None = None
-        self._new_conversation()
+        # First conversation is created data-only; _new_conversation() also
+        # redraws widgets, which don't exist until _build_ui() has run.
+        self._active_conv = Conversation()
+        self._conversations.append(self._active_conv)
 
         # ── Window ──
         if CTK:
@@ -935,6 +943,15 @@ class CarryAIApp:
 
     def run(self):
         self._root.mainloop()
+
+    def close_when(self, event: threading.Event, interval_ms: int = 500):
+        """Close the window once *event* is set (e.g. USB ejected, Ctrl+C)."""
+        def _check():
+            if event.is_set():
+                self._root.destroy()
+            else:
+                self._root.after(interval_ms, _check)
+        self._root.after(interval_ms, _check)
 
 
 # ---------------------------------------------------------------------------

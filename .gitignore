@@ -22,3 +22,8 @@ config/memory.db
 
 # Dry-run session artifacts
 _dry_run_session/
+
+# SQLite side files
+config/memory.db-shm
+config/memory.db-wal
+config/plugin_state.json

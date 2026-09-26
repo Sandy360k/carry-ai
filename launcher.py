@@ -247,9 +247,11 @@ def inject_session(host_os: str, dry_run: bool = False) -> Path:
         session_dir, _watcher = win_inject(dry_run=dry_run)
         return session_dir
     else:
-        # Linux injection is handled by the shell script; here we call a
-        # Python wrapper that invokes it.
-        session_dir = Path("/tmp/ai_session")
+        # /dev/shm is a RAM-backed tmpfs on virtually every distro and needs
+        # no root, so session files never touch the host's disk.
+        shm = Path("/dev/shm")
+        base = shm if shm.is_dir() and os.access(shm, os.W_OK) else Path("/tmp")
+        session_dir = base / "ai_session"
         if not session_dir.exists():
             log.info("Creating session directory: %s", session_dir)
             session_dir.mkdir(parents=True, exist_ok=True)
@@ -352,12 +354,21 @@ def boot(args: argparse.Namespace) -> None:
         "shutdown_event": threading.Event(),
     }
 
-    # --- Start agent ---
-    agent_thread = _start_agent(boot_context)
+    # Load the wipe code now: at eject time the USB (and its .py files) is
+    # already gone, so a lazy import would fail exactly when it matters.
+    from cleanup.cleanup import full_cleanup
+    boot_context["full_cleanup"] = full_cleanup
+    if not args.dry_run:
+        _start_eject_poller(boot_context)
+
+    use_desktop = not args.no_ui and args.ui == "desktop" and _desktop_available()
+
+    # --- Start agent (terminal REPL; the desktop app has its own chat) ---
+    agent_thread = None if use_desktop else _start_agent(boot_context)
 
     # --- Start web UI ---
     ui_thread = None
-    if not args.no_ui:
+    if not args.no_ui and not use_desktop:
         ui_thread = _start_ui(boot_context)
         url = f"http://localhost:{args.port}/?t={boot_context['ui_token']}"
         print(f"  Web UI: {url}")
@@ -384,7 +395,10 @@ def boot(args: argparse.Namespace) -> None:
     signal.signal(signal.SIGTERM, _signal_handler)
 
     try:
-        shutdown_event.wait()
+        if use_desktop:
+            _run_desktop(boot_context)
+        else:
+            shutdown_event.wait()
     except KeyboardInterrupt:
         pass
 
@@ -395,6 +409,55 @@ def boot(args: argparse.Namespace) -> None:
 # ===================================================================
 # Sub-step helpers (delegate to other modules)
 # ===================================================================
+
+def _start_eject_poller(context: dict, interval: float = 2.0) -> threading.Thread:
+    """Watch for the USB disappearing and trigger shutdown + cleanup.
+
+    Works on every OS without admin rights or extra packages: once the drive
+    is pulled, stat() on our own files fails. Complements the WMI watcher on
+    Windows and replaces the root-only udev rule on Linux.
+    """
+    probe = PROJECT_ROOT / "launcher.py"
+    shutdown_event = context["shutdown_event"]
+
+    def _poll():
+        while not shutdown_event.wait(interval):
+            try:
+                probe.stat()
+            except OSError:
+                log.warning("USB no longer reachable — cleaning up.")
+                context["ejected"] = True
+                shutdown_event.set()
+                return
+
+    t = threading.Thread(target=_poll, name="carry-ai-eject-poller", daemon=True)
+    t.start()
+    return t
+
+
+def _desktop_available() -> bool:
+    """True if the native desktop app can run (tkinter + a display)."""
+    try:
+        import tkinter  # noqa: F401
+    except ImportError:
+        log.info("tkinter not available — using the web UI instead.")
+        return False
+    if sys.platform != "win32" and not (os.environ.get("DISPLAY")
+                                        or os.environ.get("WAYLAND_DISPLAY")):
+        log.info("No display — using the web UI instead.")
+        return False
+    return True
+
+
+def _run_desktop(context: dict) -> None:
+    """Run the desktop app on the main thread until closed or ejected."""
+    from ui.desktop import CarryAIApp, ChatBackend
+    if isinstance(context.get("api_keys"), dict):
+        ChatBackend.preloaded_keys = context["api_keys"]
+    app = CarryAIApp()
+    app.close_when(context["shutdown_event"])
+    app.run()
+
 
 def _run_model_download(models_dir: Path) -> None:
     """Interactive model download from HuggingFace."""
@@ -456,6 +519,9 @@ def _init_mcp(config_dir: Path, dry_run: bool) -> list[dict]:
     except ImportError:
         log.info("MCP dependencies not installed. Skipping.")
         return []
+    except Exception as e:
+        log.error("MCP initialization failed, continuing without MCP: %s", e)
+        return []
 
 
 def _load_plugins(dry_run: bool) -> list[dict]:
@@ -465,16 +531,16 @@ def _load_plugins(dry_run: bool) -> list[dict]:
         return []
 
     try:
-        from plugins.loader import PluginLoader
-        loader = PluginLoader(search_dirs=[PROJECT_ROOT / "plugins" / "bundled"])
-        plugins = loader.load_all()
+        from plugins.manager import PluginManager
+        plugins = [m.to_dict() for m in PluginManager().boot()]
         log.info("Loaded %d plugin(s).", len(plugins))
         return plugins
-    except NotImplementedError:
-        log.info("Plugin loader not yet implemented. Skipping.")
-        return []
     except ImportError:
         log.info("Plugin dependencies not installed. Skipping.")
+        return []
+    except Exception as e:
+        # Plugins are optional — a broken one must never block boot
+        log.error("Plugin loading failed, continuing without plugins: %s", e)
         return []
 
 
@@ -544,7 +610,7 @@ def _fallback_shell(context: dict) -> None:
         print()
 
 
-def _shutdown(context: dict, agent_thread: threading.Thread,
+def _shutdown(context: dict, agent_thread: threading.Thread | None,
               ui_thread: threading.Thread | None) -> None:
     """Graceful shutdown and cleanup."""
     print("\n  Shutting down carry-ai...")
@@ -552,7 +618,9 @@ def _shutdown(context: dict, agent_thread: threading.Thread,
     # Attempt cleanup
     if not context.get("dry_run"):
         try:
-            from cleanup.cleanup import full_cleanup
+            full_cleanup = context.get("full_cleanup")
+            if full_cleanup is None:
+                from cleanup.cleanup import full_cleanup
             full_cleanup(session_dir=context.get("session_dir"), dry_run=False)
         except NotImplementedError:
             log.info("Cleanup module not yet implemented.")
@@ -575,6 +643,13 @@ def _shutdown(context: dict, agent_thread: threading.Thread,
         log.info("API keys zeroed from memory.")
 
     print("  Goodbye.\n")
+
+    if context.get("ejected"):
+        # The drive is gone: normal interpreter teardown would try to touch
+        # files on it and trip over threads blocked on stdin. Leave now.
+        sys.stdout.flush()
+        sys.stderr.flush()
+        os._exit(0)
 
 
 # ===================================================================
@@ -624,6 +699,13 @@ Examples:
         help="Headless mode — skip Flask web UI",
     )
     parser.add_argument(
+        "--ui",
+        choices=["web", "desktop"],
+        default="web",
+        help="Interface: 'desktop' (native window, falls back to web) or 'web' "
+             "(isolated browser window). Default: web",
+    )
+    parser.add_argument(
         "--verbose",
         action="store_true",
         default=False,
@@ -660,7 +742,15 @@ def main(argv: list[str] | None = None) -> None:
     """Main entry point."""
     args = parse_args(argv)
     setup_logging(verbose=args.verbose)
-    boot(args)
+    try:
+        boot(args)
+    except Exception:
+        # Don't leave a half-built session behind on the host
+        log.exception("Boot failed — wiping session before exit.")
+        if not args.dry_run:
+            from cleanup.cleanup import wipe_session_directory
+            wipe_session_directory(None)
+        raise
 
 
 if __name__ == "__main__":

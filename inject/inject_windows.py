@@ -35,6 +35,12 @@ import threading
 import time
 from pathlib import Path
 
+# Imported up front: _on_eject runs after the USB is gone, when a lazy
+# import of cleanup.cleanup from the drive would fail.
+if str(Path(__file__).resolve().parent.parent) not in sys.path:
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from cleanup.cleanup import full_cleanup  # noqa: E402
+
 log = logging.getLogger("carry-ai.inject.windows")
 
 # Where we came from (the carry-ai/ directory on the USB)
@@ -54,7 +60,9 @@ RUNTIME_COPY_LIST = [
     "mcp",
     "plugins",
     "cowork",
-    "config",
+    # "config" is deliberately NOT copied: it holds providers.enc and
+    # memory.db (the full conversation history), which must stay on the USB
+    # rather than be duplicated into the host's %TEMP%.
     "crypto",
 ]
 
@@ -303,7 +311,6 @@ def _on_eject(drive_letter: str) -> None:
 
     # Attempt cleanup
     try:
-        from cleanup.cleanup import full_cleanup
         session_dir = Path(os.environ.get("TEMP", "")) / SESSION_DIR_NAME
         full_cleanup(session_dir=str(session_dir), dry_run=False)
     except NotImplementedError:

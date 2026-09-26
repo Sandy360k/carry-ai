@@ -139,3 +139,32 @@ def test_mmproj_is_skipped_as_model_and_passed_to_server(tmp_path):
     cmd = LlamaServer(Path("llama-server"), ServerConfig(model_path=found[0])).build_command()
     assert "--jinja" in cmd
     assert cmd[cmd.index("--mmproj") + 1].endswith(mmproj_filename(model))
+
+
+# ---------------------------------------------------------------------------
+# Session lifecycle
+# ---------------------------------------------------------------------------
+
+def test_eject_poller_fires_when_usb_disappears(tmp_path, monkeypatch):
+    import threading
+    import launcher
+    (tmp_path / "launcher.py").write_text("")
+    monkeypatch.setattr(launcher, "PROJECT_ROOT", tmp_path)
+    context = {"shutdown_event": threading.Event()}
+    launcher._start_eject_poller(context, interval=0.05)
+    assert not context["shutdown_event"].wait(0.2)
+    (tmp_path / "launcher.py").unlink()  # "pull the USB"
+    assert context["shutdown_event"].wait(2)
+    assert context["ejected"] is True
+
+
+def test_real_boot_plugin_and_mcp_steps_do_not_crash():
+    import launcher
+    assert isinstance(launcher._load_plugins(dry_run=False), list)
+    assert isinstance(launcher._init_mcp(PROJECT_ROOT / "config", dry_run=False), list)
+
+
+def test_cleanup_only_targets_inference_servers_by_name():
+    from cleanup.cleanup import PROCESS_KILL_PATTERNS
+    assert "carry-ai" not in PROCESS_KILL_PATTERNS
+    assert "ai_session" not in PROCESS_KILL_PATTERNS

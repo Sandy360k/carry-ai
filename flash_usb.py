@@ -554,9 +554,9 @@ SET "USB_ROOT=%USB_ROOT:~0,-1%"
 SET "USB_PYTHON=%USB_ROOT%\python-env\windows\python.exe"
 SET "BOOTSTRAP=%USB_ROOT%\carry-ai\bootstrap.py"
 IF EXIST "%USB_PYTHON%" (
-    "%USB_PYTHON%" "%BOOTSTRAP%" %*
+    "%USB_PYTHON%" "%BOOTSTRAP%" --ui desktop %*
 ) ELSE (
-    WHERE python >/dev/null 2>&1 && python "%BOOTSTRAP%" %* || (
+    WHERE python >nul 2>&1 && python "%BOOTSTRAP%" --ui desktop %* || (
         echo [carry-ai] Python not found. Install from https://python.org or run setup_usb.py.
         PAUSE
     )
@@ -572,7 +572,7 @@ BOOTSTRAP="$SCRIPT_DIR/carry-ai/bootstrap.py"
 [ -d "$USB_SITE" ] && export PYTHONPATH="$USB_SITE${PYTHONPATH:+:$PYTHONPATH}"
 PY=$(command -v python3 || command -v python || echo "")
 [ -z "$PY" ] && { echo "[carry-ai] Python 3.10+ required."; exit 1; }
-exec "$PY" "$BOOTSTRAP" "$@"
+exec "$PY" "$BOOTSTRAP" --ui desktop "$@"
 """
 
 _AUTORUN = "[autorun]\nopen=start.bat\nlabel=carry-ai\n"

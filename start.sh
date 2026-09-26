@@ -2,17 +2,17 @@
 # ==============================================================
 # carry-ai — Linux / macOS Launcher
 # ==============================================================
-# Launches the desktop chat app. Falls back to the web UI.
+# Boots carry-ai through launcher.py so the session lives in RAM
+# (/dev/shm) and is wiped on exit or when the USB is pulled.
 #
-# Priority for UI:
+# Priority for UI (decided by launcher.py --ui desktop):
 #   1. Desktop app  (ui/desktop.py)  — native window
-#   2. Web UI       (launcher.py)    — browser at localhost:8080
+#   2. Web UI       — isolated browser window, throwaway profile
 # ==============================================================
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 USB_SITE="$SCRIPT_DIR/python-env/linux/site-packages"
-DESKTOP="$SCRIPT_DIR/carry-ai/ui/desktop.py"
 BOOTSTRAP="$SCRIPT_DIR/carry-ai/bootstrap.py"
 
 # ---- Inject USB packages if present --------------------------
@@ -33,11 +33,5 @@ else
     exit 1
 fi
 
-# ---- Launch desktop app (or fall back to web UI) -------------
-if [ -f "$DESKTOP" ]; then
-    echo "[carry-ai] Starting desktop app..." >&2
-    exec "$PY" "$DESKTOP" "$@"
-else
-    echo "[carry-ai] Desktop app not found, starting web UI..." >&2
-    exec "$PY" "$BOOTSTRAP" "$@"
-fi
+# ---- Launch (desktop app, falling back to the web UI) --------
+exec "$PY" "$BOOTSTRAP" --ui desktop "$@"
