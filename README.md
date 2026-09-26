@@ -2,7 +2,7 @@
 
 > Plug in. Chat. Eject. Leave no trace.
 
-A portable AI assistant that lives on a USB drive. Plug it into any Windows or Linux machine, run one command, and you have a full AI agent at `localhost:8080` — with local GGUF models, cloud API failover, voice mode, persistent memory, and 30+ tools. Eject the USB and everything is wiped.
+A portable AI assistant that lives on a USB drive. Plug it into any Windows or Linux machine, run one command, and you have a full AI agent at `localhost:8080` — with local GGUF models, cloud API failover, voice mode, persistent memory, and 30+ tools. Eject the USB and everything it created is wiped.
 
 ```
    ____                                _    ___
@@ -128,7 +128,7 @@ Mode is auto-detected from what's available, or forced with `--mode`.
 - **MCP support** — connect any MCP server via stdio, HTTP, or SSE
 - **Plugin system** — manifest-based tools, hooks, and lifecycle scripts
 - **Encrypted keys** — Fernet + PBKDF2 (600k iterations), decrypted in RAM only
-- **Nuclear cleanup** — 6-step trace wipe on USB eject (processes, tmpfs, clipboard, history)
+- **Automatic cleanup** — 6-step wipe on exit or USB eject (processes, RAM session, browser profile, clipboard, recent files)
 - **Web UI** — Flask SPA at `localhost:8080`, dark/light theme, real-time streaming
 
 ---
@@ -217,11 +217,11 @@ Seven providers with automatic failover and per-session health tracking (success
 
 | Provider | Models | Auth |
 |----------|--------|------|
-| **Anthropic** | Claude Opus/Sonnet/Haiku 4.x | API key |
-| **OpenAI** | GPT-4o, o4-mini, o3 | API key |
-| **Google** | Gemini 2.5 Pro/Flash, 2.0 Flash | API key or OAuth |
-| **Groq** | Llama 3.3 70B, Mixtral, Gemma2 | API key |
-| **OpenRouter** | 13+ models (multi-provider) | API key |
+| **Anthropic** | Claude Opus 5, Sonnet 5, Haiku 4.5, Fable 5.1 | API key |
+| **OpenAI** | GPT-6 Luna / Sol / Astra, GPT-5.6 | API key |
+| **Google** | Gemini 3.8 Flash, 3.5 Flash-Lite, 3.1 Pro | API key or OAuth |
+| **Groq** | gpt-oss 20B / 120B, Qwen3.8 27B (vision) | API key |
+| **OpenRouter** | 450+ models incl. free ones (`openrouter/free`) | API key |
 | **G0DM0D3** | ULTRAPLINIAN racing, CONSORTIUM synthesis, AutoTune | API key |
 | **Onyx** | RAG-enhanced (50+ data connectors) | API key + Onyx instance |
 
@@ -254,22 +254,21 @@ Via [Onyx](https://github.com/onyx-dot-app/onyx):
 
 ## Local Models
 
-The system auto-selects the best GGUF model for your available RAM (12 tiers):
+The system auto-selects the best GGUF model for your **available** RAM. The list lives in `models/catalog.py` (shared by the boot selector, the USB flasher and the Model Manager); every repo was verified on Hugging Face in Sept 2026 and none needs a token. Mixture-of-experts models with few active parameters are used at the top end because they stay fast on CPU-only machines.
 
-| RAM | Model | Context | Features |
-|-----|-------|---------|----------|
-| 32 GB+ | Qwen3 30B Q6_K | 16384 | Tool calling |
-| 24 GB+ | Llama 4 Scout 17B Q6_K | 16384 | Tool calling, multimodal |
-| 20 GB+ | Qwen3 14B Q8_0 | 12288 | Tool calling |
-| 16 GB+ | Gemma 4 12B Q4_K_M | 12288 | Tool calling, multimodal |
-| 12 GB+ | Qwen3 14B Q4_K_M | 8192 | Tool calling |
-| 10 GB+ | Qwen3 8B Q8_0 | 8192 | Tool calling |
-| 8 GB+ | Qwen3 8B Q4_K_M | 8192 | Tool calling |
-| 6 GB+ | Gemma 4 E4B Q4_K_M | 8192 | Multimodal |
-| 5 GB+ | Qwen3.5 4B Q4_K_M | 4096 | Tool calling |
-| 4 GB+ | Phi-4-mini Q4_K_M | 4096 | Tool calling |
-| 3 GB+ | Gemma 4 E2B Q4_K_M | 4096 | — |
-| < 3 GB | Gemma 3 1B Q4_K_M | 2048 | Emergency fallback |
+| Available RAM | Model | Size | Vision |
+|-----|-------|------|--------|
+| 40 GB+ | Qwen3.6 35B-A3B Q8_0 (MoE, 3B active) | 36.9 GB | ✓ |
+| 23 GB+ | Qwen3.6 35B-A3B Q4_K_M (MoE, 3B active) | 20.4 GB | ✓ |
+| 17 GB+ | Gemma 4 26B-A4B QAT (MoE, 4B active) | 14.3 GB | ✓ |
+| 14 GB+ | gpt-oss 20B MXFP4 (MoE, 3.6B active) | 12.1 GB | — |
+| 9 GB+ | Gemma 4 12B Q4_K_M | 7.1 GB | ✓ |
+| 7 GB+ | Qwen3.5 9B Q4_K_M | 5.7 GB | ✓ |
+| 5.5 GB+ | Gemma 4 E4B QAT | 4.2 GB | ✓ |
+| 3.5 GB+ | Qwen3.5 4B Q4_K_M | 2.7 GB | ✓ |
+| any | Qwen3.5 2B Q4_K_M | 1.3 GB | ✓ |
+
+All tiers support tool calling (`llama-server --jinja`). Vision models get their projector saved as `<model>.mmproj.gguf` next to the model and loaded with `--mmproj` automatically. Files over 4 GB need an exFAT/NTFS stick (not FAT32).
 
 **Download a model:**
 ```bash
@@ -475,16 +474,24 @@ See [`docs/configuration.md`](docs/configuration.md) for the full settings refer
 
 **Encryption** — API keys stored in `config/providers.enc` (Fernet AES-128-CBC + HMAC-SHA256, PBKDF2 600k iterations). Decrypted in RAM only. Never touch disk on the host machine.
 
-**Injection** — session runs in tmpfs (`/tmp/ai_session/` on Linux) or `%TEMP%\ai_session\` on Windows. Nothing is permanently installed.
+**One lifecycle for every start path** — `start.bat` / `start.sh` always boot through `launcher.py`, whichever UI you end up in, so session setup, eject detection and the wipe always run.
 
-**Eject watcher** — WMI event-driven (Windows) or udev rule (Linux). On eject, a 6-step nuclear wipe fires automatically:
+**Session in RAM where possible** — Linux uses `/dev/shm/ai_session` (RAM-backed, no root needed); Windows uses `%TEMP%\ai_session\`. Your conversation history (`memory.db`) and encrypted keys stay on the USB and are never copied to the host.
 
-1. Kill process tree (psutil / taskkill / pkill)
-2. Wipe session directory (tmpfs umount / shutil.rmtree)
-3. Clear clipboard (ctypes / xclip / xsel / wl-copy)
-4. Scrub recent files (recently-used.xbel, shell history)
-5. Remove eject watchers (WMI watcher / udev rule)
-6. Zero sensitive memory (ctypes.memset on key bytes)
+**Trace-free UI** — the web UI opens in a separate app window with a throwaway browser profile inside the session dir (never your everyday browser profile), and is locked to the session with a one-time token plus a localhost-only Host check.
+
+**Eject detection** — a portable poller notices within ~2 s when the drive disappears (plus WMI events on Windows). The wipe code is loaded at boot, so it still runs after the USB is gone:
+
+1. Kill processes carry-ai started (its own children and inference servers on the USB)
+2. Wipe the session directory (incl. the throwaway browser profile)
+3. Clear the clipboard
+4. Scrub carry-ai entries from recent files
+5. Remove eject watchers
+6. Drop decrypted keys from memory
+
+### What "no trace" covers — and what it can't
+
+carry-ai removes **everything it creates in user space**: session files, browser profile, clipboard, its recent-file entries. Without administrator rights **no program can erase the records Windows/Linux keep on their own** that a program ran and a USB drive was attached — e.g. Prefetch, Amcache/ShimCache, BAM, USBSTOR/MountedDevices and `setupapi.dev.log` on Windows, or journald/udisks logs on Linux — nor data the OS paged to `pagefile.sys`/swap. Think of it as *"leaves no user-visible trace and none of your data"*, not forensic invisibility.
 
 ---
 
