@@ -63,6 +63,8 @@ class LocalAIProvider(OpenAICompatProvider):
         self._port = port
         self._forced_model = model
         self._default_model = model or "auto"
+        # LocalAI has its own /v1/models discovery (models() below)
+        self._discover_models = False
         self._cached_models: list[str] = []
         self._last_model_fetch: float = 0.0
 

@@ -8,6 +8,12 @@ Shared implementation for providers that expose an OpenAI-compatible
 Handles the common HTTP request/response patterns, SSE streaming,
 error mapping, and response normalization. Subclasses only need to
 set base_url, default_model, and model list.
+
+Model discovery: GET {base_url}/models -> data[].id, filtered through
+_is_chat_model() (override per provider), cached in memory by
+BaseProvider.  The hardcoded _available_models list is the offline
+fallback.  Set _discover_models = False for self-hosted gateways whose
+model names are virtual (G0DM0D3) or discovered elsewhere (LocalAI).
 """
 
 import json
@@ -20,6 +26,7 @@ except ImportError:
     _requests = None
 
 from providers.base import (
+    DISCOVERY_TIMEOUT,
     BaseProvider,
     ChatResponse,
     ProviderError,
@@ -51,8 +58,9 @@ class OpenAICompatProvider(BaseProvider):
         self._api_key = api_key
         self._base_url = base_url.rstrip("/")
         self._session = _requests.Session()
-        self._default_model: str = "gpt-4o-mini"
+        self._default_model: str = ""
         self._available_models: list[str] = []
+        self._discover_models: bool = True
 
     def _headers(self) -> dict:
         """Build request headers."""
@@ -69,7 +77,7 @@ class OpenAICompatProvider(BaseProvider):
 
     def _build_payload(self, messages: list[dict], **kwargs) -> dict:
         """Build the chat completions request body."""
-        model = kwargs.pop("model", None) or self._default_model
+        model = self.resolve_model(kwargs.pop("model", None) or self._default_model)
 
         payload = {
             "model": model,
@@ -230,9 +238,34 @@ class OpenAICompatProvider(BaseProvider):
         except Exception:
             return False
 
-    def models(self) -> list[str]:
-        """Return the list of available models."""
+    # ------------------------------------------------------------------
+    # Model discovery
+    # ------------------------------------------------------------------
+
+    def _is_chat_model(self, model_id: str) -> bool:
+        """Filter for chat-capable IDs from /models. Override per provider."""
+        return True
+
+    def _fetch_model_ids(self) -> list[str] | None:
+        """GET {base_url}/models -> data[].id (OpenAI-compatible schema)."""
+        if not self._discover_models or not self._api_key:
+            return None
+        resp = self._session.get(
+            f"{self._base_url}/models",
+            headers=self._headers(),
+            timeout=DISCOVERY_TIMEOUT,
+        )
+        resp.raise_for_status()
+        data = resp.json().get("data", [])
+        return [m["id"] for m in data
+                if isinstance(m, dict) and m.get("id") and self._is_chat_model(m["id"])]
+
+    def _fallback_models(self) -> list[str]:
         return list(self._available_models)
+
+    def models(self) -> list[str]:
+        """Return available models (live list when reachable, else built-in)."""
+        return self.discover_models()
 
     @property
     def default_model(self) -> str:

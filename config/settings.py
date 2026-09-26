@@ -29,12 +29,14 @@ DEFAULTS = {
     "verbose": False,
 
     "providers": {
-        "anthropic":  {"enabled": True,  "model": "claude-sonnet-4-6"},
-        "openai":     {"enabled": True,  "model": "gpt-4o"},
-        "google":     {"enabled": True,  "model": "gemini-2.5-flash"},
-        "groq":       {"enabled": True,  "model": "llama-3.3-70b-versatile"},
-        "openrouter": {"enabled": True,  "model": "anthropic/claude-sonnet-4"},
-        "godmode":    {"enabled": False, "model": "anthropic/claude-sonnet-4-6",
+        # Cloud model IDs go stale; providers verify these against the live
+        # model list at runtime and fall back to their default if retired.
+        "anthropic":  {"enabled": True,  "model": "claude-opus-5"},
+        "openai":     {"enabled": True,  "model": "gpt-6-luna"},
+        "google":     {"enabled": True,  "model": "gemini-3.5-flash-lite"},
+        "groq":       {"enabled": True,  "model": "openai/gpt-oss-20b"},
+        "openrouter": {"enabled": True,  "model": "openrouter/free"},
+        "godmode":    {"enabled": False, "model": "anthropic/claude-opus-5.5",
                        "base_url": "http://localhost:3000/v1",
                        "autotune": False, "stm_modules": []},
         "onyx":       {"enabled": False, "model": "onyx/default",

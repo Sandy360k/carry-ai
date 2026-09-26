@@ -12,6 +12,14 @@ Supported Providers:
     - OpenAI (GPT) — API key auth
     - Groq — API key auth (free tier, fast inference)
     - OpenRouter — API key auth (unified gateway to all models)
+
+Model selection:
+    Each provider gets its own model on every attempt: the caller's
+    ``model`` kwarg is only sent to the first provider in the fallback
+    chain; fallbacks use ``settings.providers.<name>.model`` (or the
+    provider default).  Providers validate the ID against their live
+    model list (see providers/base.py) and fall back to their default if
+    it has been retired, so a stale settings.json never breaks chat.
 """
 
 import logging
@@ -26,6 +34,7 @@ from providers.base import (
     RateLimitError,
     AuthenticationError,
     OverloadedError,
+    clear_model_cache,
 )
 
 log = logging.getLogger("carry-ai.modes.api")
@@ -177,6 +186,24 @@ def _instantiate_provider(name: str, keys: dict) -> BaseProvider | None:
         return None
 
 
+def load_configured_models() -> dict[str, str]:
+    """Read ``settings.providers.<name>.model`` for every provider.
+
+    Returns an empty dict if settings can't be loaded.
+    """
+    try:
+        from config.settings import load_settings
+        providers_cfg = load_settings().to_dict().get("providers") or {}
+    except Exception as e:
+        log.debug("Cannot load provider model settings: %s", e)
+        return {}
+    return {
+        name: cfg["model"]
+        for name, cfg in providers_cfg.items()
+        if isinstance(cfg, dict) and isinstance(cfg.get("model"), str) and cfg["model"]
+    }
+
+
 def load_providers(decrypted_keys: dict) -> dict[str, BaseProvider]:
     """Instantiate all providers for which we have decrypted keys.
 
@@ -223,16 +250,20 @@ class APIRouter:
 
     def __init__(self, decrypted_keys: dict | None = None,
                  primary_provider: str | None = None,
-                 fallback_order: list[str] | None = None):
+                 fallback_order: list[str] | None = None,
+                 provider_models: dict[str, str] | None = None):
         """
         Args:
             decrypted_keys: Decrypted API keys dict from keystore.
             primary_provider: Preferred provider name. First available if None.
             fallback_order: Provider names in fallback priority order.
+            provider_models: provider_name -> model ID.  Loaded from
+                settings (providers.<name>.model) when None.
         """
         self._decrypted_keys = decrypted_keys or {}
         self._primary_provider_name = primary_provider
         self._fallback_order = fallback_order or DEFAULT_FALLBACK_ORDER
+        self._provider_models = provider_models
 
         self._providers: dict[str, BaseProvider] = {}
         self._health: dict[str, ProviderHealth] = {}
@@ -241,6 +272,8 @@ class APIRouter:
     def start(self) -> None:
         """Load and validate all providers."""
         self._providers = load_providers(self._decrypted_keys)
+        if self._provider_models is None:
+            self._provider_models = load_configured_models()
 
         # Initialize health trackers
         for name in self._providers:
@@ -324,6 +357,19 @@ class APIRouter:
 
         return chain
 
+    def _kwargs_for(self, provider_name: str, kwargs: dict, first: bool) -> dict:
+        """Per-provider kwargs: a caller-supplied model only applies to the
+        first provider tried; others use their configured model/default."""
+        out = dict(kwargs)
+        if first and out.get("model"):
+            return out
+        configured = (self._provider_models or {}).get(provider_name)
+        if configured:
+            out["model"] = configured
+        else:
+            out.pop("model", None)
+        return out
+
     def chat(self, messages: list[dict], provider: str | None = None,
              **kwargs) -> ChatResponse:
         """Send a chat completion request with automatic fallback.
@@ -355,11 +401,13 @@ class APIRouter:
         for provider_name in chain:
             prov = self._providers[provider_name]
             health = self._health[provider_name]
+            call_kwargs = self._kwargs_for(provider_name, kwargs,
+                                           first=provider_name == chain[0])
 
             for attempt in range(MAX_RETRIES_PER_PROVIDER):
                 try:
                     t0 = time.monotonic()
-                    response = prov.chat(messages, **kwargs)
+                    response = prov.chat(messages, **call_kwargs)
                     latency = (time.monotonic() - t0) * 1000
 
                     health.record_success(latency)
@@ -421,9 +469,11 @@ class APIRouter:
             prov = self._providers[provider_name]
             health = self._health[provider_name]
 
+            call_kwargs = self._kwargs_for(provider_name, kwargs,
+                                           first=provider_name == chain[0])
             try:
                 t0 = time.monotonic()
-                for chunk in prov.stream(messages, **kwargs):
+                for chunk in prov.stream(messages, **call_kwargs):
                     yield chunk
                 latency = (time.monotonic() - t0) * 1000
                 health.record_success(latency)
@@ -499,6 +549,7 @@ class APIRouter:
 
         self._providers.clear()
         self._health.clear()
+        clear_model_cache()  # in-memory only, but drop it with the keys
 
         # Zero the keys reference
         if self._decrypted_keys:

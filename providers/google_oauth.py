@@ -8,7 +8,8 @@ and simple API key fallback.
 Features:
     - OAuth2 browser-based flow for first-time auth
     - Token refresh without re-auth
-    - Supports Gemini 2.5 Pro, Flash models
+    - Gemini 3.x models (Flash-Lite default, Flash, Pro preview)
+    - Runtime model discovery via GET /v1beta/models (hardcoded = fallback)
     - Multimodal input (text + images)
     - Streaming via SSE
     - Function calling / tool use
@@ -16,6 +17,15 @@ Features:
 API Endpoint:
     POST https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent
     POST https://generativelanguage.googleapis.com/v1beta/models/{model}:streamGenerateContent
+    GET  https://generativelanguage.googleapis.com/v1beta/models?pageSize=1000
+
+Gemini 3 notes:
+    - Temperature should stay at the model default (1.0); lower values can
+      cause looping/degraded reasoning, so ``temperature`` is not sent for
+      Gemini 3 models.
+    - Thinking is controlled with ``thinking_level`` (never together with
+      ``thinking_budget``).  This provider sends neither, so the model's
+      default thinking level applies.
 """
 
 import json
@@ -27,6 +37,7 @@ except ImportError:
     _requests = None
 
 from providers.base import (
+    DISCOVERY_TIMEOUT,
     BaseProvider,
     ChatResponse,
     ProviderError,
@@ -38,14 +49,33 @@ from providers.base import (
 log = logging.getLogger("carry-ai.providers.google")
 
 API_BASE = "https://generativelanguage.googleapis.com/v1beta"
-DEFAULT_MODEL = "gemini-2.5-flash"
+DEFAULT_MODEL = "gemini-3.5-flash-lite"
 
+# Offline fallback only -- the live list comes from GET /models.
 AVAILABLE_MODELS = [
-    "gemini-2.5-pro",
-    "gemini-2.5-flash",
-    "gemini-2.0-flash",
-    "gemini-2.0-flash-lite",
+    "gemini-3.5-flash-lite",   # default: cheap, free tier
+    "gemini-3.8-flash",        # quality
+    "gemini-3.1-pro-preview",  # pro (no free tier)
+    "gemini-flash-latest",     # alias -> current Flash
 ]
+
+# Non-chat models that still advertise generateContent
+_NON_CHAT_MARKERS = ("embedding", "aqa", "imagen", "image", "tts",
+                     "native-audio", "live", "veo")
+
+
+def is_gemini3_family(model: str) -> bool:
+    """Gemini 3+ (incl. -latest aliases, which now point at Gemini 3)."""
+    m = (model or "").removeprefix("models/")
+    if m.endswith("-latest"):
+        return True
+    if not m.startswith("gemini-"):
+        return False
+    try:
+        major = int(m.split("-")[1].split(".")[0])
+    except (IndexError, ValueError):
+        return False
+    return major >= 3
 
 
 class GoogleProvider(BaseProvider):
@@ -190,7 +220,7 @@ class GoogleProvider(BaseProvider):
 
         return [{"functionDeclarations": declarations}]
 
-    def _build_payload(self, messages: list[dict], **kwargs) -> dict:
+    def _build_payload(self, messages: list[dict], model: str = "", **kwargs) -> dict:
         """Build the generateContent request body."""
         system, contents = self._convert_messages(messages)
 
@@ -201,7 +231,8 @@ class GoogleProvider(BaseProvider):
 
         # Generation config
         gen_config = {}
-        if "temperature" in kwargs:
+        if "temperature" in kwargs and not is_gemini3_family(model):
+            # Gemini 3 is tuned for the default temperature (1.0)
             gen_config["temperature"] = kwargs["temperature"]
         if "max_tokens" in kwargs:
             gen_config["maxOutputTokens"] = kwargs["max_tokens"]
@@ -281,9 +312,9 @@ class GoogleProvider(BaseProvider):
 
     def chat(self, messages: list[dict], **kwargs) -> ChatResponse:
         """Send a generateContent request to Gemini API."""
-        model = kwargs.pop("model", None) or DEFAULT_MODEL
+        model = self.resolve_model(kwargs.pop("model", None) or DEFAULT_MODEL)
         url = f"{self._base_url}/models/{model}:generateContent"
-        payload = self._build_payload(messages, **kwargs)
+        payload = self._build_payload(messages, model=model, **kwargs)
         params = self._get_auth_params()
 
         try:
@@ -306,9 +337,9 @@ class GoogleProvider(BaseProvider):
 
         Yields dicts: {"type": "content"|"tool_call"|"done", "data": ...}
         """
-        model = kwargs.pop("model", None) or DEFAULT_MODEL
+        model = self.resolve_model(kwargs.pop("model", None) or DEFAULT_MODEL)
         url = f"{self._base_url}/models/{model}:streamGenerateContent"
-        payload = self._build_payload(messages, **kwargs)
+        payload = self._build_payload(messages, model=model, **kwargs)
         params = self._get_auth_params()
         params["alt"] = "sse"
 
@@ -374,8 +405,42 @@ class GoogleProvider(BaseProvider):
             return len(self._api_key) > 10
         return False
 
-    def models(self) -> list[str]:
+    # ------------------------------------------------------------------
+    # Model discovery
+    # ------------------------------------------------------------------
+
+    def _fetch_model_ids(self) -> list[str] | None:
+        """GET /models -> models[].name, keeping generateContent chat models."""
+        if not (self._api_key or self._access_token):
+            return None
+        params = {"pageSize": 1000}
+        headers = {}
+        if self._access_token:
+            headers["Authorization"] = f"Bearer {self._access_token}"
+        else:
+            params["key"] = self._api_key
+        resp = self._session.get(f"{self._base_url}/models", params=params,
+                                 headers=headers, timeout=DISCOVERY_TIMEOUT)
+        resp.raise_for_status()
+        ids = []
+        for m in resp.json().get("models", []):
+            name = (m.get("name") or "").removeprefix("models/")
+            methods = m.get("supportedGenerationMethods") or []
+            if not name or "generateContent" not in methods:
+                continue
+            if any(marker in name for marker in _NON_CHAT_MARKERS):
+                continue
+            ids.append(name)
+        return ids
+
+    def _fallback_models(self) -> list[str]:
         return list(AVAILABLE_MODELS)
+
+    def _model_aliases(self) -> set[str]:
+        return {"gemini-flash-latest"}
+
+    def models(self) -> list[str]:
+        return self.discover_models()
 
     @property
     def default_model(self) -> str:
