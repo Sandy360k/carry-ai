@@ -31,6 +31,7 @@ import argparse
 import logging
 import os
 import platform
+import secrets
 import signal
 import sys
 import threading
@@ -371,6 +372,9 @@ def boot(args: argparse.Namespace) -> None:
         "plugin_tools": plugin_tools,
         "dry_run": args.dry_run,
         "port": args.port,
+        "no_ui": args.no_ui,
+        "ui_token": secrets.token_urlsafe(32),
+        "shutdown_event": threading.Event(),
     }
 
     # --- Start agent ---
@@ -380,21 +384,22 @@ def boot(args: argparse.Namespace) -> None:
     ui_thread = None
     if not args.no_ui:
         ui_thread = _start_ui(boot_context)
-        url = f"http://localhost:{args.port}"
+        url = f"http://localhost:{args.port}/?t={boot_context['ui_token']}"
         print(f"  Web UI: {url}")
 
-        # Auto-open browser after a short delay (give Flask time to bind)
-        import webbrowser
+        # Auto-open an isolated browser window after a short delay (give
+        # Flask time to bind); its profile lives in the session dir.
         def _open_browser():
             import time as _time
+            from ui.browser import open_private
             _time.sleep(1.5)
-            webbrowser.open(url)
+            print(f"  Opened in: {open_private(url, boot_context['session_dir'])}")
         threading.Thread(target=_open_browser, daemon=True).start()
 
     print("\n  carry-ai is running. Press Ctrl+C to stop.\n")
 
-    # --- Wait for shutdown signal ---
-    shutdown_event = threading.Event()
+    # --- Wait for shutdown signal (or the headless REPL exiting) ---
+    shutdown_event = boot_context["shutdown_event"]
 
     def _signal_handler(signum, frame):
         log.info("Received signal %s — shutting down.", signum)
@@ -510,6 +515,10 @@ def _start_agent(context: dict) -> threading.Thread:
             _fallback_shell(context)
         except Exception as e:
             log.error("Agent crashed: %s", e, exc_info=True)
+        # Headless: the REPL is the whole app, so quitting it (or stdin
+        # hitting EOF) ends the session. With a UI, keep serving.
+        if context.get("no_ui"):
+            context["shutdown_event"].set()
 
     t = threading.Thread(target=_agent_worker, name="carry-ai-agent", daemon=True)
     t.start()

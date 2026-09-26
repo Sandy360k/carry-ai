@@ -9,14 +9,22 @@ Architecture:
     - Flask backend serves API + inline HTML/CSS/JS (no build step)
     - SSE (Server-Sent Events) for streaming responses
     - Single-page app — all vanilla JS, no frameworks needed
+
+Security:
+    The agent can run shell commands, so the UI must not be reachable by
+    other web pages. Every request must carry a loopback Host header (blocks
+    DNS rebinding) and the per-session token, which arrives once via
+    ``/?t=<token>`` and is then kept in an HttpOnly, SameSite=Strict cookie.
 """
 
+import hmac
 import json
 import logging
+import secrets
 import time
 
 try:
-    from flask import Flask, Response, request, jsonify
+    from flask import Flask, Response, request, jsonify, redirect
 except ImportError:
     Flask = None
 
@@ -510,6 +518,14 @@ document.addEventListener('keydown', e => {
 </html>"""
 
 
+_TOKEN_COOKIE = "carry_ai_token"
+
+_LOCKED_HTML = """<!DOCTYPE html><html><body style="font-family:sans-serif;padding:2em">
+<h2>carry-ai is locked</h2>
+<p>Open the link printed in the carry-ai console (it contains a one-time
+session token).</p></body></html>"""
+
+
 # ===================================================================
 # Flask app factory
 # ===================================================================
@@ -530,6 +546,28 @@ def create_app(agent=None, config=None):
     config = config or {}
     app = Flask(__name__)
     app.config["JSON_SORT_KEYS"] = False
+
+    # Per-session access token (see module docstring)
+    ui_token = config.get("ui_token") or secrets.token_urlsafe(32)
+    config["ui_token"] = ui_token
+    allowed_hosts = {"127.0.0.1", "localhost", "[::1]"}
+
+    @app.before_request
+    def _guard():
+        host = (request.host or "").rsplit(":", 1)[0].lower()
+        if host not in allowed_hosts:
+            return Response("Forbidden host", status=403)
+        if request.path == "/" and request.args.get("t"):
+            if not hmac.compare_digest(request.args["t"], ui_token):
+                return Response("Invalid token", status=403)
+            resp = redirect("/")  # drop the token from the address bar
+            resp.set_cookie(_TOKEN_COOKIE, ui_token, httponly=True,
+                            samesite="Strict")
+            return resp
+        cookie = request.cookies.get(_TOKEN_COOKIE, "")
+        if not hmac.compare_digest(cookie, ui_token):
+            return Response(_LOCKED_HTML, status=403, content_type="text/html")
+        return None
 
     # Lazy agent initialization
     _agent = {"instance": agent}
