@@ -100,3 +100,42 @@ def test_browser_profile_lives_in_session_dir(tmp_path):
     argv = chromium_command("msedge", "http://127.0.0.1:8080/?t=x", tmp_path)
     assert f"--user-data-dir={tmp_path}" in argv
     assert any(a.startswith("--app=") for a in argv)
+
+
+# ---------------------------------------------------------------------------
+# Local model catalogue
+# ---------------------------------------------------------------------------
+
+def test_catalog_entries_are_complete_and_best_first():
+    from models.catalog import CATALOG
+    keys = {"name", "ram_gb", "size_gb", "hf_repo", "hf_file", "match_patterns"}
+    for m in CATALOG:
+        assert keys <= m.keys(), m["name"]
+        assert m["hf_file"].endswith(".gguf")
+        assert m["size_gb"] < max(m["ram_gb"], 2), f"{m['name']} leaves no headroom"
+    rams = [m["ram_gb"] for m in CATALOG]
+    assert rams == sorted(rams, reverse=True)
+    assert CATALOG[-1]["ram_gb"] == 0, "need a fallback that fits any machine"
+
+
+def test_every_catalog_model_matches_its_own_tier():
+    from pathlib import Path
+    from models.catalog import CATALOG
+    from modes.local_mode import _match_path_to_tier
+    for m in CATALOG:
+        tier = _match_path_to_tier(Path(m["hf_file"]))
+        assert tier is not None and tier.name == m["name"], m["hf_file"]
+
+
+def test_mmproj_is_skipped_as_model_and_passed_to_server(tmp_path):
+    from models.catalog import CATALOG, mmproj_filename
+    from modes.local_mode import (LlamaServer, ServerConfig,
+                                  scan_available_models)
+    model = next(m for m in CATALOG if m.get("mmproj"))
+    (tmp_path / model["hf_file"]).write_bytes(b"x")
+    (tmp_path / mmproj_filename(model)).write_bytes(b"x")
+    found = scan_available_models(tmp_path)
+    assert [p.name for p in found] == [model["hf_file"]]
+    cmd = LlamaServer(Path("llama-server"), ServerConfig(model_path=found[0])).build_command()
+    assert "--jinja" in cmd
+    assert cmd[cmd.index("--mmproj") + 1].endswith(mmproj_filename(model))

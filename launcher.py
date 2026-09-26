@@ -62,19 +62,6 @@ BANNER = r"""
   Portable AI Assistant — inject, assist, vanish.
 """
 
-# ---------------------------------------------------------------------------
-# Constants: model tiers (RAM threshold → preferred model filename stem)
-# ---------------------------------------------------------------------------
-MODEL_TIERS = [
-    {"min_ram_gb": 8, "name": "Qwen3 8B Q4", "stem": "qwen3-8b", "quant": "Q4_K_M"},
-    {"min_ram_gb": 6, "name": "Gemma 4 E4B Q4", "stem": "gemma-4-e4b", "quant": "Q4_K_M"},
-    {"min_ram_gb": 5, "name": "Qwen3.5 4B Q4", "stem": "qwen3.5-4b", "quant": "Q4_K_M"},
-    {"min_ram_gb": 4, "name": "Phi-4-mini Q4", "stem": "phi-4-mini", "quant": "Q4_K_M"},
-    {"min_ram_gb": 3, "name": "Gemma 4 E2B Q4", "stem": "gemma-4-e2b", "quant": "Q4_K_M"},
-    {"min_ram_gb": 0, "name": "Gemma 3 1B Q4", "stem": "gemma-3-1b", "quant": "Q4_K_M"},
-]
-
-
 # ===================================================================
 # Core detection functions
 # ===================================================================
@@ -147,7 +134,9 @@ def scan_models(models_dir: Path) -> list[Path]:
     """
     if not models_dir.is_dir():
         return []
-    gguf_files = sorted(models_dir.glob("*.gguf"), key=lambda p: p.stat().st_size, reverse=True)
+    gguf_files = sorted(
+        (p for p in models_dir.glob("*.gguf") if "mmproj" not in p.name.lower()),
+        key=lambda p: p.stat().st_size, reverse=True)
     for f in gguf_files:
         size_gb = f.stat().st_size / (1024 ** 3)
         log.info("  Found model: %s (%.2f GB)", f.name, size_gb)
@@ -157,30 +146,16 @@ def scan_models(models_dir: Path) -> list[Path]:
 def select_model_for_ram(available_ram_gb: float, available_models: list[Path]) -> tuple[dict | None, Path | None]:
     """Pick the best model that fits the available RAM.
 
-    Matches available .gguf files against MODEL_TIERS by filename stem.
-    Falls back to the smallest available model if no tier matches.
+    Delegates to modes.local_mode.select_model, whose tiers come from the
+    shared catalogue in models/catalog.py.
 
     Returns:
         (tier_dict, model_path) or (None, None) if no models available.
     """
-    if not available_models:
-        return None, None
-
-    model_names_lower = {m.stem.lower(): m for m in available_models}
-
-    for tier in MODEL_TIERS:
-        if available_ram_gb < tier["min_ram_gb"]:
-            continue
-        # Try to find a matching model by stem substring
-        for stem_lower, model_path in model_names_lower.items():
-            if tier["stem"].replace("-", "").replace(".", "") in stem_lower.replace("-", "").replace(".", ""):
-                log.info("Selected model tier: %s → %s", tier["name"], model_path.name)
-                return tier, model_path
-
-    # Fallback: pick the smallest available model
-    smallest = min(available_models, key=lambda p: p.stat().st_size)
-    log.info("No tier match. Falling back to smallest model: %s", smallest.name)
-    return None, smallest
+    from dataclasses import asdict
+    from modes.local_mode import select_model
+    tier, model_path = select_model(available_ram_gb, available_models)
+    return (asdict(tier) if tier else None), model_path
 
 
 # ===================================================================

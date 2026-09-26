@@ -10,7 +10,7 @@ autocomplete entries that outlive the USB session. Instead we launch a
 Chromium-family browser (Edge ships with every Windows 10/11 install) as a
 separate app-mode window whose profile lives inside the session directory,
 so the cleanup sweep removes it together with the session. Firefox gets a
-private window. Only if nothing suitable is found do we fall back to the
+private window on a throwaway profile in the same place. Only if nothing suitable is found do we fall back to the
 default browser, with a warning.
 """
 
@@ -104,7 +104,11 @@ def open_private(url: str, session_dir: str | Path | None) -> str:
     exe = _find(["firefox"], _FIREFOX_PATHS)
     if exe:
         try:
-            subprocess.Popen([exe, "--private-window", url], **popen_kwargs)
+            # --private-window alone still uses (and writes) the default
+            # profile; -no-remote -profile pins a throwaway one.
+            profile_dir.mkdir(parents=True, exist_ok=True)
+            subprocess.Popen([exe, "-no-remote", "-profile", str(profile_dir),
+                              "--private-window", url], **popen_kwargs)
             return "Firefox private window"
         except OSError as e:
             log.warning("Could not launch %s: %s", exe, e)

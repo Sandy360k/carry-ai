@@ -72,90 +72,27 @@ class ModelTier:
     multimodal: bool = False
 
 
-MODEL_TIERS: list[ModelTier] = [
-    # --- 32 GB tier ---
-    ModelTier(
-        min_ram_gb=32, name="Qwen3 30B Q6_K",
-        match_patterns=["qwen3-30b", "qwen3_30b", "qwen-3-30b"],
-        context_size=16384, estimated_size_gb=24.0,
-        supports_tools=True,
-    ),
-    # --- 24 GB tier ---
-    ModelTier(
-        min_ram_gb=24, name="Llama 4 Scout 17B Q6_K",
-        match_patterns=["llama-4-scout", "llama4-scout", "llama_4_scout"],
-        context_size=16384, estimated_size_gb=14.0,
-        supports_tools=True, multimodal=True,
-    ),
-    # --- 20 GB tier ---
-    ModelTier(
-        min_ram_gb=20, name="Qwen3 14B Q8_0",
-        match_patterns=["qwen3-14b.*q8", "qwen3_14b.*q8", "qwen-3-14b.*q8"],
-        context_size=12288, estimated_size_gb=15.0,
-        supports_tools=True,
-    ),
-    # --- 16 GB tier ---
-    ModelTier(
-        min_ram_gb=16, name="Gemma 4 12B Q4_K_M",
-        match_patterns=["gemma-4-12b", "gemma4-12b", "gemma_4_12b"],
-        context_size=12288, estimated_size_gb=8.0,
-        supports_tools=True, multimodal=True,
-    ),
-    # --- 12 GB tier ---
-    ModelTier(
-        min_ram_gb=12, name="Qwen3 14B Q4_K_M",
-        match_patterns=["qwen3-14b.*q4", "qwen3_14b.*q4", "qwen-3-14b.*q4"],
-        context_size=8192, estimated_size_gb=8.5,
-        supports_tools=True,
-    ),
-    # --- 10 GB tier ---
-    ModelTier(
-        min_ram_gb=10, name="Qwen3 8B Q8_0",
-        match_patterns=["qwen3-8b.*q8", "qwen3_8b.*q8", "qwen-3-8b.*q8"],
-        context_size=8192, estimated_size_gb=8.5,
-        supports_tools=True,
-    ),
-    # --- 8 GB tier ---
-    ModelTier(
-        min_ram_gb=8, name="Qwen3 8B Q4_K_M",
-        match_patterns=["qwen3-8b.*q4", "qwen3_8b.*q4", "qwen-3-8b.*q4"],
-        context_size=8192, estimated_size_gb=4.5,
-        supports_tools=True,
-    ),
-    # --- 6 GB tier ---
-    ModelTier(
-        min_ram_gb=6, name="Gemma 4 E4B Q4_K_M",
-        match_patterns=["gemma-4-e4b", "gemma4-e4b", "gemma_4_e4b"],
-        context_size=8192, estimated_size_gb=3.5,
-        multimodal=True,
-    ),
-    # --- 5 GB tier ---
-    ModelTier(
-        min_ram_gb=5, name="Qwen3.5 4B Q4_K_M",
-        match_patterns=["qwen3.5-4b", "qwen3_5-4b", "qwen3.5_4b"],
-        context_size=4096, estimated_size_gb=2.5,
-        supports_tools=True,
-    ),
-    # --- 4 GB tier ---
-    ModelTier(
-        min_ram_gb=4, name="Phi-4-mini Q4_K_M",
-        match_patterns=["phi-4-mini", "phi4-mini", "phi_4_mini"],
-        context_size=4096, estimated_size_gb=2.2,
-        supports_tools=True,
-    ),
-    # --- 3 GB tier ---
-    ModelTier(
-        min_ram_gb=3, name="Gemma 4 E2B Q4_K_M",
-        match_patterns=["gemma-4-e2b", "gemma4-e2b", "gemma_4_e2b"],
-        context_size=4096, estimated_size_gb=1.5,
-    ),
-    # --- Emergency fallback ---
-    ModelTier(
-        min_ram_gb=0, name="Gemma 3 1B Q4_K_M",
-        match_patterns=["gemma-3-1b", "gemma3-1b", "gemma_3_1b"],
-        context_size=2048, estimated_size_gb=0.8,
-    ),
-]
+def _tiers_from_catalog() -> list[ModelTier]:
+    """Build the RAM tiers from the shared catalogue (models/catalog.py)."""
+    if str(PROJECT_ROOT) not in sys.path:
+        sys.path.insert(0, str(PROJECT_ROOT))
+    from models.catalog import CATALOG
+    return [
+        ModelTier(
+            min_ram_gb=m["ram_gb"], name=m["name"],
+            match_patterns=m["match_patterns"],
+            context_size=m.get("context_size", 4096),
+            estimated_size_gb=m["size_gb"],
+            supports_tools=m.get("tools", False),
+            multimodal=bool(m.get("mmproj")),
+        )
+        for m in CATALOG
+    ]
+
+
+# Best-first; entries come from models/catalog.py so the auto-selector,
+# flasher and Model Manager always agree.
+MODEL_TIERS: list[ModelTier] = _tiers_from_catalog()
 
 
 # ===================================================================
@@ -171,8 +108,10 @@ def scan_available_models(models_dir: Path) -> list[Path]:
         log.warning("Models directory does not exist: %s", models_dir)
         return []
 
+    # Vision projectors (<stem>.mmproj.gguf) are loaded alongside their
+    # model, never on their own.
     models = sorted(
-        models_dir.glob("*.gguf"),
+        (p for p in models_dir.glob("*.gguf") if "mmproj" not in p.name.lower()),
         key=lambda p: p.stat().st_size,
         reverse=True,
     )
@@ -364,7 +303,14 @@ class LlamaServer:
             "--ctx-size", str(self.config.context_size),
             "--batch-size", str(self.config.batch_size),
             "--parallel", str(self.config.parallel),
+            # Apply the model's own chat template — required for tool calling
+            "--jinja",
         ]
+
+        # Vision projector stored next to the model (see models/catalog.py)
+        mmproj = Path(self.config.model_path).with_suffix(".mmproj.gguf")
+        if mmproj.is_file():
+            cmd.extend(["--mmproj", str(mmproj)])
 
         if self.config.threads > 0:
             cmd.extend(["--threads", str(self.config.threads)])

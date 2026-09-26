@@ -94,38 +94,6 @@ PROVIDERS = [
 FONT_FAMILY = "Segoe UI" if platform.system() == "Windows" else "Helvetica"
 MONO_FAMILY = "Consolas" if platform.system() == "Windows" else "DejaVu Sans Mono"
 
-# GGUF model catalogue (mirrored from flash_usb.py)
-GGUF_MODELS = [
-    {"name": "Qwen2.5 1.5B Q4_K_M", "ram_gb": 2, "size_gb": 1.1,
-     "desc": "Tiny fallback — fits any machine",
-     "hf_repo": "Qwen/Qwen2.5-1.5B-Instruct-GGUF",
-     "hf_file": "qwen2.5-1.5b-instruct-q4_k_m.gguf", "gated": False},
-    {"name": "Gemma 3 1B Q4_K_M", "ram_gb": 2, "size_gb": 0.8,
-     "desc": "Google Gemma, tiny [needs HF token]",
-     "hf_repo": "bartowski/gemma-3-1b-it-GGUF",
-     "hf_file": "gemma-3-1b-it-Q4_K_M.gguf", "gated": True},
-    {"name": "Qwen2.5 3B Q4_K_M", "ram_gb": 4, "size_gb": 2.0,
-     "desc": "Good quality, 4 GB RAM",
-     "hf_repo": "Qwen/Qwen2.5-3B-Instruct-GGUF",
-     "hf_file": "qwen2.5-3b-instruct-q4_k_m.gguf", "gated": False},
-    {"name": "Phi-4-mini Q4_K_M", "ram_gb": 5, "size_gb": 2.4,
-     "desc": "Strong reasoning + tool calling",
-     "hf_repo": "bartowski/Phi-4-mini-instruct-GGUF",
-     "hf_file": "Phi-4-mini-instruct-Q4_K_M.gguf", "gated": False},
-    {"name": "Gemma 4 E4B Q4_K_M", "ram_gb": 6, "size_gb": 3.1,
-     "desc": "Multimodal vision [needs HF token]",
-     "hf_repo": "bartowski/gemma-4-e4b-GGUF",
-     "hf_file": "gemma-4-e4b-Q4_K_M.gguf", "gated": True},
-    {"name": "Qwen2.5 7B Q4_K_M", "ram_gb": 6, "size_gb": 4.7,
-     "desc": "Strong all-around, 6 GB RAM",
-     "hf_repo": "Qwen/Qwen2.5-7B-Instruct-GGUF",
-     "hf_file": "qwen2.5-7b-instruct-q4_k_m.gguf", "gated": False},
-    {"name": "Qwen2.5 14B Q4_K_M", "ram_gb": 12, "size_gb": 9.0,
-     "desc": "Best quality, 12 GB RAM",
-     "hf_repo": "Qwen/Qwen2.5-14B-Instruct-GGUF",
-     "hf_file": "qwen2.5-14b-instruct-q4_k_m.gguf", "gated": False},
-]
-
 # ---------------------------------------------------------------------------
 # Data structures
 # ---------------------------------------------------------------------------
