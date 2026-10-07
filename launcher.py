@@ -319,6 +319,8 @@ def boot(args: argparse.Namespace) -> None:
     # --- Inject session ---
     session_dir = inject_session(host_os, dry_run=args.dry_run)
     log.info("Session directory: %s", session_dir)
+    # Tools (e.g. browse's throwaway browser profile) put files here too.
+    os.environ["CARRY_AI_SESSION_DIR"] = str(session_dir)
 
     # --- Decrypt API keys (api/hybrid) ---
     decrypted_keys = None

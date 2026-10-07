@@ -29,7 +29,7 @@ import os
 import platform
 import re
 import subprocess
-import webbrowser
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -426,10 +426,17 @@ def _tool_web_fetch(url: str, max_length: int = 50000) -> str:
 
 
 def _tool_browse(url: str) -> str:
-    """Open a URL in the default browser."""
+    """Open a URL in a throwaway-profile browser window.
+
+    The host's default browser would keep the URL in its history after
+    eject; ui.browser.open_private puts the profile in the session dir.
+    """
     try:
-        webbrowser.open(url)
-        return f"Opened {url} in default browser"
+        from ui.browser import open_private
+        session_dir = (os.environ.get("CARRY_AI_SESSION_DIR")
+                       or os.path.join(tempfile.gettempdir(), "ai_session"))
+        how = open_private(url, session_dir)
+        return f"Opened {url} ({how})"
     except Exception as e:
         return f"Error opening browser: {e}"
 
