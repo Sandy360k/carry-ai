@@ -42,6 +42,9 @@ if [ -f "$USB_PY" ]; then
                 if [ -d "$USB_SITE" ]; then
                     cp -r "$USB_SITE" "$SESSION/site-packages" 2>/dev/null \
                         && USB_SITE="$SESSION/site-packages"
+                    # Helper binaries shipped in wheels (the monty sandbox
+                    # worker); FAT/exFAT keeps no exec bits to copy.
+                    chmod +x "$SESSION/site-packages/bin/"* 2>/dev/null || true
                 fi
                 echo "[carry-ai] USB is mounted noexec — running from $SESSION" >&2
                 break

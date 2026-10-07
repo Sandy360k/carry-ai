@@ -128,7 +128,8 @@ PACKAGE_GROUPS = {
         "google-auth-oauthlib>=1.2.0",
     ],
     "models": ["huggingface-hub>=0.23.0"],
-    "tools": ["pyautogui>=0.9.54", "pyperclip>=1.8.2"],
+    "tools": ["pyautogui>=0.9.54", "pyperclip>=1.8.2",
+              "pydantic-monty>=1.1.0"],   # run_python sandbox
     # Offline speech (sherpa-onnx) + mic/speaker (PyAudio, Windows only) +
     # ElevenLabs SDK for the optional cloud voice. AssemblyAI is plain REST.
     "voice": ["sherpa-onnx>=1.13.8", "pyaudio>=0.2.14", "elevenlabs>=2.0.0", "Pillow>=10.0.0"],

@@ -122,6 +122,7 @@ MODEL_PACKAGES = [
 TOOL_PACKAGES = [
     "pyautogui>=0.9.54",
     "pyperclip>=1.8.2",
+    "pydantic-monty>=1.1.0",   # run_python sandbox
 ]
 VOICE_PACKAGES = [
     "sherpa-onnx>=1.13.8",   # offline speech-to-text / text-to-speech

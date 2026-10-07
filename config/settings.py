@@ -104,6 +104,15 @@ DEFAULTS = {
         "max_recording_seconds": 60,
     },
 
+    # run_python tool (integrations/python_sandbox.py, pydantic-monty):
+    # sandboxed Python with no host filesystem/network; /work is a scratch
+    # folder in the session dir. Registered only if pydantic-monty is installed.
+    "sandbox": {
+        "enabled": True,
+        "timeout_s": 10,
+        "max_memory_mb": 256,
+    },
+
     # Peripheral features, off by default. They don't fit the disposable,
     # offline-first USB session (extra services, host installs, or shared
     # state) and are opt-in. Enable in settings.json, e.g.

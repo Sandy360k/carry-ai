@@ -663,6 +663,7 @@ def _register_integrations() -> None:
         - Scrapling (D4Vinci/Scrapling) — adaptive web scraping
         - Google Workspace CLI (googleworkspace/cli) — Drive, Gmail, Sheets, Calendar
         - llmfit (AlexsJones/llmfit) — hardware-aware model recommendations
+        - Monty (pydantic/monty) — run_python, a sandboxed Python interpreter
 
     Each integration gracefully degrades if its dependency is not installed.
     """
@@ -689,6 +690,13 @@ def _register_integrations() -> None:
         log.debug("Google Workspace integration not loaded (module not found)")
     except Exception as e:
         log.debug("Google Workspace integration error: %s", e)
+
+    # Python sandbox (pydantic/monty): adds run_python
+    try:
+        from integrations.python_sandbox import register_python_sandbox_tool
+        register_python_sandbox_tool(register_tool)
+    except Exception as e:
+        log.debug("Python sandbox not loaded: %s", e)
 
     # llmfit: adds model_recommend tool
     try:

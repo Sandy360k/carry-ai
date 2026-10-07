@@ -212,6 +212,15 @@ Place this file at `config/settings.json` on the USB drive (next to `carry-ai/`)
     // Empty = the button explains how to set it up; pasting a token works.
   },
 
+  "sandbox": {
+    // run_python tool: Python in a Monty sandbox (pydantic-monty). No access to
+    // the host filesystem, network or processes; /work is a scratch folder in the
+    // session dir (wiped on eject). Only registered if pydantic-monty is installed.
+    "enabled": true,
+    "timeout_s": 10,        // per run; a timeout resets the sandbox's variables
+    "max_memory_mb": 256
+  },
+
   "experimental": {
     // Peripheral features, off by default. They don't fit the disposable,
     // offline-first USB session, so they're opt-in.

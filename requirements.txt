@@ -66,6 +66,8 @@ pyperclip>=1.8.2             # Clipboard read/write/wipe
                              #   extra: curl_cffi + playwright/patchright)
                              # scrapling install  (Chromium for stealth; carry-ai points
                              #   PLAYWRIGHT_BROWSERS_PATH at USB bin/ms-playwright)
+# pydantic-monty>=1.1.0      # run_python sandbox (pydantic/monty); worker binary
+#                            #   lands in <site-packages>/bin with pip --target
 # llmfit                     # Hardware-aware model selection (AlexsJones/llmfit)
                              # Install: pip install llmfit  (PyPI ships the native
                              #   binary in platform wheels; no Rust toolchain needed)

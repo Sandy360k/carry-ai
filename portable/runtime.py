@@ -33,6 +33,7 @@ Design notes:
 Stdlib only — imported by flash_usb.py on hosts with a bare Python.
 """
 
+import contextlib
 import hashlib
 import logging
 import os
@@ -42,6 +43,7 @@ import stat
 import subprocess
 import sys
 import tarfile
+import tempfile
 import zipfile
 from pathlib import Path, PurePosixPath
 from urllib.request import Request, urlopen
@@ -92,7 +94,10 @@ LLAMA_ASSETS: dict[str, list[tuple[str, str, str]]] = {
 
 # pip tags for cross-installing wheels that match the bundled interpreter
 PIP_PLATFORMS: dict[str, list[str]] = {
-    "linux": ["manylinux_2_17_x86_64", "manylinux2014_x86_64"],
+    # 2_28 last: pip prefers earlier tags, so it is used only for packages
+    # with no older wheel (pydantic-monty-runtime). Needs glibc 2.28+
+    # (Debian 10 / Ubuntu 18.10 / RHEL 8 or newer).
+    "linux": ["manylinux_2_17_x86_64", "manylinux2014_x86_64", "manylinux_2_28_x86_64"],
     "windows": ["win_amd64"],
 }
 
@@ -387,20 +392,53 @@ def install_packages(packages: list[str], usb_root: Path, os_name: str,
     target.mkdir(parents=True, exist_ok=True)
     failed = []
     for pkg in packages:
-        name = re.split(r"[<>=!~\[ ]", pkg, maxsplit=1)[0].strip()
-        if os_name not in ONLY_ON.get(name.lower(), {os_name}):
-            continue
-        if name.lower() in SOURCE_ONLY:
-            deps = SOURCE_ONLY[name.lower()][os_name]
-            cmd = pip_install_command([pkg, *deps], target, os_name, source_build=True)
-        else:
-            cmd = pip_install_command([pkg], target, os_name)
-        result = subprocess.run(cmd, capture_output=True, text=True)
-        ok = result.returncode == 0
-        if not ok:
-            failed.append(name)
-            log.warning("pip failed for %s (%s): %s", name, os_name,
-                        (result.stderr or result.stdout).strip()[-300:])
-        if report:
-            report(name, ok)
+        with _keep_scripts(target):
+            _install_one(pkg, target, os_name, failed, report)
     return failed
+
+
+@contextlib.contextmanager
+def _keep_scripts(target: Path):
+    """Keep earlier packages' scripts across one ``pip --target --upgrade``.
+
+    pip replaces the whole ``<target>/bin`` (``Scripts`` on Windows) folder
+    with the one from the package it is installing, so a later package with
+    a script (cffi's cffi-gen-src) wiped an earlier one's binary (the monty
+    worker, llmfit). Copies of what was there are put back afterwards.
+    """
+    saved = []
+    with tempfile.TemporaryDirectory() as tmp:
+        for name in ("bin", "Scripts"):
+            folder = target / name
+            if folder.is_dir():
+                backup = Path(tmp) / name
+                shutil.copytree(folder, backup)
+                saved.append((folder, backup))
+        try:
+            yield
+        finally:
+            for folder, backup in saved:
+                folder.mkdir(exist_ok=True)
+                for item in backup.iterdir():
+                    dest = folder / item.name
+                    if not dest.exists():
+                        shutil.copy2(item, dest)
+
+
+def _install_one(pkg: str, target: Path, os_name: str, failed: list, report) -> None:
+    name = re.split(r"[<>=!~\[ ]", pkg, maxsplit=1)[0].strip()
+    if os_name not in ONLY_ON.get(name.lower(), {os_name}):
+        return
+    if name.lower() in SOURCE_ONLY:
+        deps = SOURCE_ONLY[name.lower()][os_name]
+        cmd = pip_install_command([pkg, *deps], target, os_name, source_build=True)
+    else:
+        cmd = pip_install_command([pkg], target, os_name)
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    ok = result.returncode == 0
+    if not ok:
+        failed.append(name)
+        log.warning("pip failed for %s (%s): %s", name, os_name,
+                    (result.stderr or result.stdout).strip()[-300:])
+    if report:
+        report(name, ok)

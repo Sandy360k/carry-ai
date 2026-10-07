@@ -286,6 +286,7 @@ ReAct-pattern agent loop (Observe → Think → Act → Observe) with 30+ tools:
 | Category | Tools |
 |----------|-------|
 | **System** | `shell`, `get_system_info`, `model_recommend` |
+| **Code** | `run_python` — sandboxed Python ([Monty](https://github.com/pydantic/monty)): no host files, network or processes; `/work` scratch folder in the session dir; 10 s / 256 MB limits; variables persist between calls |
 | **Files** | `read_file`, `write_file`, `edit_file`, `list_files`, `search_files` |
 | **Screen** | `screenshot`, `click`, `type_text` |
 | **Clipboard** | `clipboard_read`, `clipboard_write` |
@@ -557,7 +558,8 @@ carry-ai/
 │   ├── voice_tools.py       # Push-to-talk voice: offline (sherpa-onnx) or cloud STT/TTS
 │   ├── scrapling_tools.py   # Adaptive web scraping
 │   ├── gworkspace_tools.py  # Google Workspace API
-│   └── llmfit_advisor.py    # Hardware-aware model selection
+│   ├── llmfit_advisor.py    # Hardware-aware model selection
+│   └── python_sandbox.py    # run_python tool (pydantic-monty sandbox)
 
 ├── mcp/                     # MCP client (stdio/HTTP/SSE)
 ├── plugins/                 # Plugin loader + manager
