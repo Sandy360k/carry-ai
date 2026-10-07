@@ -1044,12 +1044,19 @@ class ModelManagerWindow:
         # Active tab
         self._active_tab = tk.StringVar(value="my")
 
-        # Available RAM for display
+        # Free RAM + dedicated VRAM, for the fit labels and download warning
         try:
             import psutil
             self._ram_gb = psutil.virtual_memory().available / (1024 ** 3)
         except ImportError:
             self._ram_gb = 0.0
+        self._vram_gb, self._gpu_name = 0.0, ""
+        try:
+            from integrations.llmfit_advisor import detect_hardware
+            hw = detect_hardware()
+            self._vram_gb, self._gpu_name = hw.vram_gb, hw.gpu_name
+        except Exception as e:
+            log.debug("GPU detection unavailable: %s", e)
 
         self._win = tk.Toplevel(parent)
         self._win.title("carry-ai — Model Manager")
@@ -1073,7 +1080,9 @@ class ModelManagerWindow:
         tk.Label(hdr, text="Model Manager", font=(FONT_FAMILY, 15, "bold"),
                  fg=self.C["fg"], bg=self.C["bg2"]).pack(side="left", padx=16)
         if self._ram_gb > 0:
-            tk.Label(hdr, text=f"RAM: {self._ram_gb:.1f} GB free",
+            gpu = (f"  |  GPU: {self._gpu_name} {self._vram_gb:.0f} GB"
+                   if self._vram_gb else "  |  no dedicated GPU")
+            tk.Label(hdr, text=f"RAM: {self._ram_gb:.1f} GB free{gpu}",
                      font=(FONT_FAMILY, 10), fg=self.C["fg2"],
                      bg=self.C["bg2"]).pack(side="right", padx=16)
 
@@ -1325,9 +1334,7 @@ class ModelManagerWindow:
             if m["quant"]:
                 meta_parts.append(m["quant"])
             if self._ram_gb > 0:
-                needed = m["size_gb"] + 1.5
-                fits = "fits" if self._ram_gb >= needed else "needs more RAM"
-                meta_parts.append(f"{fits} ({needed:.0f} GB needed)")
+                meta_parts.append(self._fit(m["size_gb"]).label())
             if m["verified_ok"] is True:
                 meta_parts.append("verified ✓")
             elif m["verified_ok"] is False:
@@ -1503,10 +1510,7 @@ class ModelManagerWindow:
                 fname = f.filename if hasattr(f, "filename") else f.get("filename", "")
                 size_gb = (f.size_bytes if hasattr(f, "size_bytes") else f.get("size_bytes", 0)) / (1024**3)
                 quant = f.quant if hasattr(f, "quant") else f.get("quant", "")
-                needed = size_gb + 1.5
-                ram_hint = ""
-                if self._ram_gb > 0:
-                    ram_hint = f" ✓" if self._ram_gb >= needed else f" (need {needed:.0f}GB)"
+                ram_hint = f"  {self._fit(size_gb).label()}" if self._ram_gb > 0 else ""
                 status = " [downloaded]" if fname in existing else ""
                 label = f"[{quant or '?':>8}]  {size_gb:.1f} GB{ram_hint}  {fname}{status}"
                 self._quant_lb.insert("end", label)
@@ -1526,11 +1530,29 @@ class ModelManagerWindow:
             self._dl_info_lbl.config(text=f"{fname}  ({size_gb:.2f} GB)")
             self._dl_btn.config(state="normal")
 
+    def _fit(self, size_gb: float):
+        """Fit estimate against this PC's free RAM + dedicated VRAM."""
+        from models.fit import estimate_fit
+        return estimate_fit(size_gb, self._ram_gb, self._vram_gb)
+
     def _start_download_selected(self):
         if not self._selected_file or not self._selected_repo:
             return
         f = self._selected_file
         fname = f.filename if hasattr(f, "filename") else f.get("filename", "")
+        size_gb = (f.size_bytes if hasattr(f, "size_bytes") else f.get("size_bytes", 0)) / (1024**3)
+        if self._ram_gb > 0 and size_gb > 0:
+            fit = self._fit(size_gb)
+            if not fit.ok:
+                from tkinter import messagebox
+                if not messagebox.askyesno(
+                        "Model too big for this PC",
+                        f"{fname} needs about {fit.needed_gb:.0f} GB at run time, but "
+                        f"this PC has about {fit.budget_gb:.0f} GB free (RAM"
+                        f"{' + GPU' if self._vram_gb else ''}).\n\n"
+                        "It may fail to load or be very slow. Download anyway?",
+                        icon="warning", parent=self._win):
+                    return
         gated = False  # unknown from search; rely on 401 handling
         model = {
             "name": fname,

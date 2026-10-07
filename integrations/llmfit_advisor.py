@@ -35,6 +35,7 @@ import logging
 import platform
 import shutil
 import subprocess
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -74,6 +75,73 @@ class ModelRecommendation:
     estimated_tps: float = 0.0     # Tokens per second
     context_size: int = 4096
     reason: str = ""
+
+
+# Below this, a "GPU" is an integrated chip sharing system RAM; offloading to
+# it gains little, so treat it as no dedicated VRAM.
+_MIN_DEDICATED_VRAM_GB = 1.0
+
+_PCI_VENDORS = {"0x1002": "amd", "0x10de": "nvidia", "0x8086": "intel"}
+
+
+def _detect_vram_linux_sysfs() -> tuple[str, float, str] | None:
+    """Largest dedicated VRAM from /sys/class/drm (amdgpu exposes
+    mem_info_vram_total; works for any user, no tools needed)."""
+    if not sys.platform.startswith("linux"):
+        return None
+    best = None
+    for vram_file in Path("/sys/class/drm").glob("card*/device/mem_info_vram_total"):
+        try:
+            gb = int(vram_file.read_text().strip()) / (1024 ** 3)
+            vendor_id = (vram_file.parent / "vendor").read_text().strip()
+        except (OSError, ValueError):
+            continue
+        vendor = _PCI_VENDORS.get(vendor_id, "unknown")
+        if gb >= _MIN_DEDICATED_VRAM_GB and (best is None or gb > best[1]):
+            best = (f"{vendor.upper()} GPU", gb, vendor)
+    return best
+
+
+def _detect_vram_windows_registry() -> tuple[str, float, str] | None:
+    """Largest dedicated VRAM from the display-adapter class key.
+
+    HardwareInformation.qwMemorySize is a 64-bit value (WMI's AdapterRAM
+    caps at 4 GB) and the key is readable without admin.
+    """
+    if sys.platform != "win32":
+        return None
+    try:
+        import winreg
+    except ImportError:
+        return None
+    base = (r"SYSTEM\CurrentControlSet\Control\Class"
+            r"\{4d36e968-e325-11ce-bfc1-08002be10318}")
+    best = None
+    try:
+        root = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, base)
+    except OSError:
+        return None
+    with root:
+        for i in range(32):
+            try:
+                sub = winreg.EnumKey(root, i)
+            except OSError:
+                break
+            try:
+                with winreg.OpenKey(root, sub) as key:
+                    size, _ = winreg.QueryValueEx(key, "HardwareInformation.qwMemorySize")
+                    name, _ = winreg.QueryValueEx(key, "DriverDesc")
+            except OSError:
+                continue
+            if isinstance(size, bytes):
+                size = int.from_bytes(size[:8], "little")
+            gb = int(size) / (1024 ** 3)
+            low = str(name).lower()
+            vendor = next((v for v in ("nvidia", "amd", "intel")
+                           if v in low or (v == "amd" and "radeon" in low)), "unknown")
+            if gb >= _MIN_DEDICATED_VRAM_GB and (best is None or gb > best[1]):
+                best = (str(name), gb, vendor)
+    return best
 
 
 def detect_hardware() -> HardwareProfile:
@@ -118,7 +186,9 @@ def detect_hardware() -> HardwareProfile:
         except Exception as e:
             log.debug("llmfit info failed: %s", e)
 
-    # Fallback GPU detection (NVIDIA only via nvidia-smi)
+    # Fallback GPU detection, no admin needed. NVIDIA via nvidia-smi first,
+    # then vendor-neutral sources so AMD/Intel cards (which the bundled
+    # Vulkan llama-server can use) are counted too.
     if not profile.has_gpu:
         try:
             result = subprocess.run(
@@ -136,6 +206,12 @@ def detect_hardware() -> HardwareProfile:
                     profile.has_gpu = True
         except Exception:
             pass
+
+    if not profile.has_gpu:
+        found = _detect_vram_linux_sysfs() or _detect_vram_windows_registry()
+        if found:
+            profile.gpu_name, profile.vram_gb, profile.gpu_vendor = found
+            profile.has_gpu = True
 
     # Determine run mode
     if profile.has_gpu and profile.vram_gb >= 2.0:
