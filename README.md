@@ -57,14 +57,14 @@ python flash_usb.py
 **Works like Rufus.** Detects your USB drives, you pick one, and it:
 - Copies carry-ai onto the USB
 - Downloads and installs all Python packages *onto the USB* (no pip install needed on target machines)
-- Bundles a portable Python interpreter for Windows hosts (no Python needed at all)
+- Bundles a portable Python interpreter for **both** Windows and Linux hosts (python-build-standalone) plus llama.cpp (Vulkan GPU + CPU) — nothing to install on either OS
 - Optionally downloads GGUF models and voice pipeline deps onto the USB
 
 After flashing, the USB is fully self-contained:
 
 ```
-Windows host  →  insert USB, double-click start.bat   (no Python required)
-Linux host    →  insert USB, bash /media/usb/start.sh  (only needs Python 3.10+)
+Windows host  →  insert USB, double-click start.bat    (nothing to install)
+Linux host    →  insert USB, bash /media/usb/start.sh  (nothing to install)
 ```
 
 ---
@@ -141,11 +141,13 @@ The USB drive is not just storage — it hosts its own runtime.
 USB:/
 ├── carry-ai/              ← source code
 ├── python-env/
-│   ├── windows/           ← portable Python interpreter + all packages
+│   ├── windows/           ← bundled Python interpreter + all packages
 │   │   ├── python.exe     ← no install needed on Windows host
 │   │   └── Lib/site-packages/
 │   └── linux/
+│       ├── python/        ← bundled Python interpreter (no install needed)
 │       └── site-packages/ ← all packages, injected via PYTHONPATH
+├── bin/llama/<os>-vulkan|cpu/  ← llama-server (GPU via any driver, + CPU)
 ├── models/                ← GGUF model files
 ├── start.bat              ← Windows entry point
 └── start.sh               ← Linux entry point
@@ -156,7 +158,9 @@ USB:/
 | Platform | Python source | Package source | Requirement on host |
 |----------|--------------|----------------|---------------------|
 | Windows | `python-env/windows/python.exe` (bundled) | `python-env/windows/Lib/site-packages/` | Nothing |
-| Linux | System `python3` | `python-env/linux/site-packages/` via `PYTHONPATH` | Python 3.10+ |
+| Linux | `python-env/linux/python/` (bundled) | `python-env/linux/site-packages/` via `PYTHONPATH` | Nothing (host `python3` only if the bundle is absent) |
+
+On a USB mounted `noexec` (common for Linux exFAT/FAT automounts), `start.sh` copies the bundled Python and packages into the RAM session directory and runs from there, so compiled extensions can load; the copy is wiped on eject with the rest of the session.
 
 `start.sh` automatically sets `PYTHONPATH` before launching, so the host machine's site-packages are never touched. `start.bat` calls the bundled `python.exe` directly.
 
