@@ -41,12 +41,11 @@ GODMODE_BASE_URL = "http://localhost:3000/v1"
 # Virtual model names that trigger different racing strategies
 AVAILABLE_MODELS = [
     # Standard models (routed via OpenRouter backend)
-    "anthropic/claude-sonnet-4-6",
-    "openai/gpt-4o",
-    "google/gemini-2.5-pro",
-    "meta-llama/llama-3.3-70b-instruct",
-    "deepseek/deepseek-r1",
-    "qwen/qwen3-32b",
+    "anthropic/claude-opus-5.5",
+    "openai/gpt-6-luna",
+    "google/gemini-3.8-flash",
+    "google/gemma-4-31b-it:free",
+    "openrouter/auto",
     # ULTRAPLINIAN racing tiers (race N models, pick best)
     "ultraplinian/fast",           # Race 10 fast models
     "ultraplinian/smart",          # Race 20 quality models
@@ -56,7 +55,7 @@ AVAILABLE_MODELS = [
     "consortium/deep",             # Synthesize from top 20
 ]
 
-DEFAULT_MODEL = "anthropic/claude-sonnet-4-6"
+DEFAULT_MODEL = "anthropic/claude-opus-5.5"
 
 # AutoTune context categories (detected automatically)
 AUTOTUNE_CATEGORIES = [
@@ -105,6 +104,8 @@ class GodmodeProvider(OpenAICompatProvider):
         )
         self._default_model = DEFAULT_MODEL
         self._available_models = AVAILABLE_MODELS
+        # Virtual racing/synthesis model names aren't in any /models list
+        self._discover_models = False
         self._autotune = autotune
         self._stm_modules = stm_modules or []
 

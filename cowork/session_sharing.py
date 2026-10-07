@@ -106,7 +106,7 @@ class SessionExporter:
         exporter = SessionExporter("exports/")
 
         # Export current session
-        path = exporter.export_json(messages, mode="api", model="claude-sonnet-4-6")
+        path = exporter.export_json(messages, mode="api", model="claude-opus-5")
         path = exporter.export_markdown(messages, title="Debug session")
 
         # Import

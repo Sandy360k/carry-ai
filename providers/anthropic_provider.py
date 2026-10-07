@@ -5,18 +5,34 @@ carry-ai/providers/anthropic_provider.py — Anthropic Claude Provider
 Implements BaseProvider for Anthropic's Claude API (Messages endpoint).
 
 Features:
-    - Supports Claude Opus, Sonnet, Haiku model families
+    - Claude Opus 5 (default), Sonnet 5, Haiku 4.5, Fable 5.1
+    - Runtime model discovery via GET /v1/models (hardcoded = fallback)
     - Streaming via SSE (Server-Sent Events)
     - System prompt as top-level parameter (Anthropic-specific)
     - Tool use / function calling support
     - Automatic retry on 429 (rate limit) and 529 (overloaded)
 
-API Endpoint:
+API Endpoints:
     POST https://api.anthropic.com/v1/messages
+    GET  https://api.anthropic.com/v1/models
+
+Model-specific request rules:
+    - claude-opus-5 / claude-sonnet-5 / claude-fable-5-1 (and any newer
+      model) reject sampling params (temperature, top_p, top_k) with a 400,
+      so they are only sent to legacy models (Haiku 4.5 and older).
+    - The same models reject assistant-message prefill: a trailing
+      assistant message is dropped with a warning.
+    - claude-fable-5-1 rejects forced tool_choice (any / tool); it is
+      downgraded to auto.
+    - Manual extended thinking (budget_tokens) is rejected on new models;
+      this provider does not send ``thinking`` at all.
+    - ``stop_reason == "refusal"`` is checked before reading content and
+      surfaced as a clear message.
 """
 
 import json
 import logging
+import re
 
 try:
     import requests as _requests
@@ -24,6 +40,7 @@ except ImportError:
     _requests = None
 
 from providers.base import (
+    DISCOVERY_TIMEOUT,
     BaseProvider,
     ChatResponse,
     ProviderError,
@@ -36,14 +53,31 @@ log = logging.getLogger("carry-ai.providers.anthropic")
 
 API_BASE = "https://api.anthropic.com"
 API_VERSION = "2023-06-01"
-DEFAULT_MODEL = "claude-sonnet-4-6"
+DEFAULT_MODEL = "claude-opus-5"
 DEFAULT_MAX_TOKENS = 4096
 
+# Offline fallback only -- the live list comes from GET /v1/models.
 AVAILABLE_MODELS = [
-    "claude-opus-4-6",
-    "claude-sonnet-4-6",
-    "claude-haiku-4-5-20251001",
+    "claude-opus-5",
+    "claude-sonnet-5",
+    "claude-haiku-4-5",
+    "claude-fable-5-1",
 ]
+
+# Legacy models that still accept temperature / top_p / top_k and prefill.
+# Anything else (Opus 5, Sonnet 5, Fable 5.1 and newer) rejects them.
+_LEGACY_SAMPLING_RE = re.compile(r"^claude-(3|(opus|sonnet|haiku)-4)")
+
+# Models that reject forced tool_choice ({"type": "any"} / {"type": "tool"})
+_NO_FORCED_TOOL_CHOICE = ("claude-fable-5",)
+
+REFUSAL_MESSAGE = ("[Claude declined to answer this request (stop_reason: refusal). "
+                   "Try rephrasing, or switch to another model/provider.]")
+
+
+def accepts_sampling_params(model: str) -> bool:
+    """True if the model still accepts temperature/top_p/top_k."""
+    return bool(_LEGACY_SAMPLING_RE.match(model or ""))
 
 
 class AnthropicProvider(BaseProvider):
@@ -154,8 +188,17 @@ class AnthropicProvider(BaseProvider):
         """Build the /v1/messages request body."""
         system, converted_messages = self._convert_messages(messages)
 
+        model = self.resolve_model(kwargs.get("model") or DEFAULT_MODEL)
+        legacy = accepts_sampling_params(model)
+
+        if (not legacy and converted_messages
+                and converted_messages[-1].get("role") == "assistant"):
+            log.warning("Anthropic: %s rejects assistant prefill; dropping the "
+                        "trailing assistant message.", model)
+            converted_messages = converted_messages[:-1]
+
         payload = {
-            "model": kwargs.get("model", DEFAULT_MODEL),
+            "model": model,
             "messages": converted_messages,
             "max_tokens": kwargs.get("max_tokens", DEFAULT_MAX_TOKENS),
         }
@@ -166,10 +209,10 @@ class AnthropicProvider(BaseProvider):
         if kwargs.get("stream"):
             payload["stream"] = True
 
-        if "temperature" in kwargs:
-            payload["temperature"] = kwargs["temperature"]
-        if "top_p" in kwargs:
-            payload["top_p"] = kwargs["top_p"]
+        if legacy:
+            for key in ("temperature", "top_p", "top_k"):
+                if key in kwargs:
+                    payload[key] = kwargs[key]
         if "stop" in kwargs:
             payload["stop_sequences"] = kwargs["stop"] if isinstance(kwargs["stop"], list) else [kwargs["stop"]]
 
@@ -184,6 +227,10 @@ class AnthropicProvider(BaseProvider):
                     payload["tool_choice"] = {"type": "any"}
                 elif isinstance(tc, dict):
                     payload["tool_choice"] = tc
+            forced = payload.get("tool_choice", {}).get("type") in ("any", "tool")
+            if forced and model.startswith(_NO_FORCED_TOOL_CHOICE):
+                log.warning("Anthropic: %s rejects forced tool_choice; using auto.", model)
+                payload["tool_choice"] = {"type": "auto"}
 
         return payload
 
@@ -214,6 +261,24 @@ class AnthropicProvider(BaseProvider):
 
     def _parse_response(self, data: dict, model_used: str) -> ChatResponse:
         """Parse a non-streaming Anthropic response into ChatResponse."""
+        usage = data.get("usage", {})
+        usage_dict = {
+            "input_tokens": usage.get("input_tokens", 0),
+            "output_tokens": usage.get("output_tokens", 0),
+            "total_tokens": usage.get("input_tokens", 0) + usage.get("output_tokens", 0),
+        }
+
+        # Check refusal before reading content -- partial content is unreliable
+        if data.get("stop_reason") == "refusal":
+            log.warning("Anthropic: model refused the request.")
+            return ChatResponse(
+                role="assistant",
+                content=REFUSAL_MESSAGE,
+                provider="anthropic",
+                model=data.get("model", model_used),
+                usage=usage_dict,
+            )
+
         content_blocks = data.get("content", [])
         text_parts = []
         tool_calls = []
@@ -233,19 +298,13 @@ class AnthropicProvider(BaseProvider):
                     },
                 })
 
-        usage = data.get("usage", {})
-
         return ChatResponse(
             role="assistant",
             content="\n".join(text_parts),
             tool_calls=tool_calls if tool_calls else None,
             provider="anthropic",
             model=data.get("model", model_used),
-            usage={
-                "input_tokens": usage.get("input_tokens", 0),
-                "output_tokens": usage.get("output_tokens", 0),
-                "total_tokens": usage.get("input_tokens", 0) + usage.get("output_tokens", 0),
-            },
+            usage=usage_dict,
         )
 
     def chat(self, messages: list[dict], **kwargs) -> ChatResponse:
@@ -350,6 +409,9 @@ class AnthropicProvider(BaseProvider):
 
             elif event_type == "message_delta":
                 stop_reason = event.get("delta", {}).get("stop_reason")
+                if stop_reason == "refusal":
+                    log.warning("Anthropic: model refused the request (stream).")
+                    yield {"type": "content", "data": "\n" + REFUSAL_MESSAGE}
                 if stop_reason:
                     yield {"type": "done", "data": stop_reason}
                     return
@@ -365,8 +427,29 @@ class AnthropicProvider(BaseProvider):
         except Exception:
             return False
 
-    def models(self) -> list[str]:
+    # ------------------------------------------------------------------
+    # Model discovery
+    # ------------------------------------------------------------------
+
+    def _fetch_model_ids(self) -> list[str] | None:
+        """GET /v1/models -> data[].id (all Claude models are chat models)."""
+        if not self._api_key:
+            return None
+        resp = self._session.get(
+            f"{self._base_url}/v1/models",
+            params={"limit": 1000},
+            headers={"x-api-key": self._api_key, "anthropic-version": API_VERSION},
+            timeout=DISCOVERY_TIMEOUT,
+        )
+        resp.raise_for_status()
+        return [m["id"] for m in resp.json().get("data", [])
+                if isinstance(m, dict) and m.get("id")]
+
+    def _fallback_models(self) -> list[str]:
         return list(AVAILABLE_MODELS)
+
+    def models(self) -> list[str]:
+        return self.discover_models()
 
     @property
     def default_model(self) -> str:

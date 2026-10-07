@@ -18,9 +18,10 @@ carry-ai/
 ├── onboard.py               # Interactive setup wizard (run this first)
 ├── flash_usb.py             # Rufus-style USB flasher — run on host, writes everything to USB
 ├── setup_usb.py             # USB package env builder — run from USB after copy
+├── update_usb.py            # Smart USB updater — syncs only changed files & packages
 ├── bootstrap.py             # sys.path injector — called by start scripts, prepends USB packages
-├── start.bat                # Windows launcher — uses python-env\windows\python.exe if present
-├── start.sh                 # Linux launcher — sets PYTHONPATH to python-env/linux/site-packages
+├── start.bat                # Windows launcher → bootstrap.py --ui desktop (python-env\windows\python.exe if present)
+├── start.sh                 # Linux launcher → bootstrap.py --ui desktop (PYTHONPATH=python-env/linux/site-packages)
 ├── package.py               # USB packaging & distribution script
 ├── requirements.txt         # Python dependencies
 ├── README.md                # End-user documentation
@@ -35,7 +36,7 @@ carry-ai/
 │   ├── api_mode.py          # Cloud API router with provider health tracking
 │   └── local_mode.py        # llama.cpp local inference runner
 
-├── providers/               # LLM provider integrations (7 providers)
+├── providers/               # LLM provider integrations (runtime model discovery in base.py)
 │   ├── base.py              # Abstract base class & exception hierarchy
 │   ├── openai_compat.py     # Shared OpenAI-compatible base class
 │   ├── anthropic_provider.py
@@ -44,6 +45,7 @@ carry-ai/
 │   ├── groq_provider.py
 │   ├── openrouter_provider.py
 │   ├── godmode_provider.py
+│   ├── localai_provider.py
 │   └── onyx_provider.py
 
 ├── agent/
@@ -52,8 +54,9 @@ carry-ai/
 │   └── memory.py            # SQLite-backed persistent memory (FTS5, v2)
 
 ├── ui/
-│   ├── app.py               # Flask SPA at localhost:8080 (HTML/CSS/JS embedded)
-│   └── desktop.py           # Native desktop chat app (customtkinter/tkinter)
+│   ├── app.py               # Flask SPA at localhost:8080 (token + Host guard, HTML/CSS/JS embedded)
+│   ├── browser.py           # Opens the web UI in an isolated app window (throwaway profile)
+│   └── desktop.py           # Native desktop chat app (customtkinter/tkinter), run by launcher.py
 
 ├── mcp/
 │   ├── client.py            # JSON-RPC transport (stdio, HTTP, SSE)
@@ -82,11 +85,15 @@ carry-ai/
 │   └── cleanup.py           # 6-step trace wiper triggered on USB eject
 
 ├── models/
+│   ├── catalog.py           # Local model catalogue — single source of truth for RAM tiers
+│   ├── registry.py          # Downloaded-model registry (verify, active model)
 │   └── downloader.py        # HuggingFace GGUF browser & downloader
 
 ├── crypto/
 │   └── keystore.py          # Fernet encryption, PBKDF2 key derivation
 
+├── tests/                   # pytest smoke tests (run in CI on Linux + Windows)
+│
 └── config/
     ├── settings.py          # Hierarchical config loader
     ├── settings.json        # (USB-resident, optional) runtime overrides
@@ -112,21 +119,23 @@ carry-ai/
 
 1. Detect OS (Windows/Linux)
 2. Probe RAM via `psutil` (12 tiers: `<3 GB` → `32+ GB`)
-3. Inject session: copy runtime to `%TEMP%\ai_session\` (Windows) or tmpfs at `/tmp/ai_session/` (Linux)
+3. Inject session: `%TEMP%\ai_session\` (Windows) or RAM-backed `/dev/shm/ai_session/` (Linux, falls back to `/tmp`)
 4. Select mode: `local` | `api` | `hybrid` | `auto`
 5. Auto-select GGUF model if local/hybrid (RAM-tier + quantization-aware)
 6. Decrypt `config/providers.enc` in RAM if api/hybrid
 7. Connect MCP servers (`mcp/`)
 8. Load plugins (`plugins/`)
-9. Start Flask UI + agent loop
-10. Block on eject event → run `cleanup/cleanup.py`
+9. Pre-import `cleanup.cleanup` and start the eject poller (stat on our own files every 2 s)
+10. Start the UI: desktop app on the main thread (`--ui desktop`) or Flask + isolated browser window (`--ui web`), plus the terminal agent loop
+11. On window close / Ctrl+C / eject → run `cleanup.full_cleanup` (ejected → `os._exit` right after)
 
 **CLI flags:**
 ```
 --dry-run              Test without USB hardware
 --mode local|api|hybrid  Force mode
 --port PORT            Override port (default 8080)
---no-ui                Headless CLI
+--ui web|desktop       Interface (start scripts pass desktop; falls back to web without tkinter/display)
+--no-ui                Headless CLI (session ends when the REPL quits or stdin closes)
 --verbose              Debug logging
 --download-model       Launch interactive HF model downloader
 ```
@@ -245,7 +254,7 @@ python models/downloader.py suggest --ram 16     # RAM-based suggestion
 python models/downloader.py local                # List downloaded models
 ```
 
-RAM-to-model tier map (in `launcher.py`): 12 tiers from `≥32 GB → Qwen3 30B-Q8` down to `<3 GB → Gemma 1B-Q4`.
+RAM-to-model tiers come from `models/catalog.py` (verified HF repos, Sept 2026): from Qwen3.6-35B-A3B at 40 GB+ down to Qwen3.5-2B for any machine. `modes/local_mode.py`, `launcher.py`, `flash_usb.py` and `models/downloader.py` all read it — edit the catalogue, never a copy. Vision projectors are stored as `<model stem>.mmproj.gguf` and passed with `--mmproj`.
 
 ---
 
@@ -301,8 +310,12 @@ Three modes controlled by `settings.agent.permission_mode`:
 
 ## Testing
 
-There is **no formal test framework** (no pytest, no test/ directory). Validation strategies:
-- `--dry-run` flag: boots without USB hardware
+Smoke tests live in `tests/` (pytest, no network) and run in CI (`.github/workflows/ci.yml`, Linux + Windows, Python 3.10/3.12):
+```bash
+python -m pytest -q tests
+```
+Other validation:
+- `--dry-run` flag: boots without USB hardware (skips key decryption, MCP, plugins and the eject poller — a real boot exercises more)
 - Plugin manifest validation in `plugins/loader.py`
 - Settings validation in `config/settings.py`
 - Provider config checks in `providers/base.py`
@@ -391,9 +404,12 @@ USB_ROOT/
 3. **USB-first design** — `config/providers.enc` and `config/settings.json` are expected to live on the USB, not in the repo. Never commit secrets.
 4. **Trace wipe is destructive** — `cleanup/cleanup.py` performs a 6-step sweep; test changes to it carefully with `--dry-run`.
 5. **Optional imports** — Many integrations are optional. Always guard third-party imports with try/except; never make optional deps required without updating `requirements.txt`.
-6. **Provider additions** — New providers must extend `BaseProvider`, handle all three exception types, and be registered in `modes/api_mode.py`.
+6. **Provider additions** — New providers must extend `BaseProvider`, handle all three exception types, and be registered in `modes/api_mode.py`. Implement `_fetch_model_ids()` / `_fallback_models()` so `models()` discovers live IDs and `resolve_model()` can replace retired ones; hardcoded lists are only the offline fallback.
 7. **Tool additions** — Register via `register_tool()` in `agent/tools.py`; keep `execute_fn` side-effect-safe when `permission_mode == "safe"`.
 8. **Voice pipeline** — `integrations/voice_tools.py` is fully optional; all four deps (pyaudio, assemblyai, elevenlabs, Pillow) are guarded. Never make them required.
 9. **Onboarding** — `onboard.py` uses `rich` for the visual experience but has a complete plain-text fallback; it must run with only stdlib if rich is not yet installed.
 10. **USB self-hosting** — `flash_usb.py` and `setup_usb.py` install packages with `pip install --target` into the USB. `bootstrap.py` injects that directory via `sys.path.insert(0, ...)`. Never assume host site-packages are available; all imports that aren't stdlib should be guarded with try/except.
 11. **Portable Python URL** — Windows embeddable Python is downloaded from `https://www.python.org/ftp/python/{VERSION}/python-{VERSION}-embed-amd64.zip`. The version string in the URL uses dots (e.g. `3.11.9`), not digits concatenated.
+12. **"No trace" scope** — carry-ai can only remove what it creates in user space (session dir, browser profile, clipboard, its recent-file entries). OS execution/USB records (Prefetch, Amcache, USBSTOR, journald…) need admin and are out of scope; don't claim otherwise in docs.
+13. **Cleanup must survive eject** — anything `cleanup/cleanup.py` or the eject path needs must be imported at boot; never add lazy imports there. Only kill processes carry-ai started (descendants / binaries on the USB).
+14. **Web UI access** — every request needs the loopback Host header and the per-session token cookie (`ui/app.py`); new routes get this automatically via `before_request`.

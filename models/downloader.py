@@ -443,36 +443,23 @@ class ModelDownloader:
 
     def suggest_for_ram(self, ram_gb: float) -> list[dict]:
         """
-        Suggest models based on available RAM, using the tier definitions
-        from local_mode.py.
+        Suggest models based on available RAM, from the shared catalogue
+        in models/catalog.py.
 
         Returns list of dicts with repo_id, suggested_quant, and search hints.
         """
+        from models.catalog import CATALOG
+
         suggestions = []
-
-        # Map RAM to model names and suggested quants
-        tier_map = [
-            (32, "Qwen3 30B",          "Q6_K"),
-            (24, "Llama 4 Scout 17B",  "Q6_K"),
-            (20, "Qwen3 14B",          "Q8_0"),
-            (16, "Gemma 4 12B",        "Q4_K_M"),
-            (12, "Qwen3 14B",          "Q4_K_M"),
-            (10, "Qwen3 8B",           "Q8_0"),
-            (8,  "Qwen3 8B",           "Q4_K_M"),
-            (6,  "Gemma 4 E4B",        "Q4_K_M"),
-            (5,  "Qwen3.5 4B",         "Q4_K_M"),
-            (4,  "Phi-4-mini",         "Q4_K_M"),
-            (3,  "Gemma 4 E2B",        "Q4_K_M"),
-            (0,  "Gemma 3 1B",         "Q4_K_M"),
-        ]
-
-        for min_ram, model_name, quant in tier_map:
-            if ram_gb >= min_ram:
+        for m in CATALOG:
+            if ram_gb >= m["ram_gb"]:
                 suggestions.append({
-                    "model_name": model_name,
-                    "suggested_quant": quant,
-                    "search_query": f"{model_name} GGUF",
-                    "min_ram_gb": min_ram,
+                    "model_name": m["name"],
+                    "repo_id": m["hf_repo"],
+                    "filename": m["hf_file"],
+                    "suggested_quant": m["hf_file"].rsplit("-", 1)[-1].removesuffix(".gguf"),
+                    "search_query": f"{m['name']} GGUF",
+                    "min_ram_gb": m["ram_gb"],
                 })
                 if len(suggestions) >= 3:
                     break

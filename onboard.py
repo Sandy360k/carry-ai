@@ -150,9 +150,9 @@ OPTIONAL_PACKAGES: list[tuple[str, str]] = [
 ]
 
 PROVIDER_DESCRIPTIONS: dict[str, str] = {
-    "anthropic": "Anthropic Claude (claude-3.5-sonnet, claude-3-opus, …)",
-    "openai": "OpenAI GPT-4o / GPT-4-turbo",
-    "groq": "Groq — ultra-fast open-model inference (Llama, Mixtral)",
+    "anthropic": "Anthropic Claude (Opus 5, Sonnet 5, Haiku 4.5, …)",
+    "openai": "OpenAI GPT-6 (luna / sol / astra)",
+    "groq": "Groq — ultra-fast open-model inference (GPT-OSS, Qwen)",
     "openrouter": "OpenRouter — unified gateway to 100+ models",
     "google": "Google Gemini via OAuth / API key",
 }

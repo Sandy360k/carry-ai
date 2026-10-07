@@ -84,10 +84,10 @@ You will be prompted to set an encryption passphrase, then enter keys for whiche
 
 | Provider | Description | Key prefix |
 |----------|-------------|-----------|
-| **Anthropic** | Claude Opus, Sonnet, Haiku — Anthropic's own models | `sk-ant-...` |
-| **OpenAI** | GPT-4o, o4-mini, o3 — OpenAI's model family | `sk-...` |
-| **Google** | Gemini 2.5 Pro, 2.5 Flash, 2.0 Flash — API key or OAuth | — |
-| **Groq** | Llama 3.3 70B, Gemma2, Qwen — LPU hardware, very fast, free tier | `gsk_...` |
+| **Anthropic** | Claude Opus 5, Sonnet 5, Haiku 4.5 — Anthropic's own models | `sk-ant-...` |
+| **OpenAI** | GPT-6 Luna / Sol / Astra — OpenAI's model family | `sk-...` |
+| **Google** | Gemini 3.8 Flash, 3.5 Flash-Lite, 3.1 Pro — API key or OAuth | — |
+| **Groq** | gpt-oss 20B / 120B, Qwen3.8 — LPU hardware, very fast, free tier | `gsk_...` |
 | **OpenRouter** | Unified gateway to 200+ models from all major providers | `sk-or-...` |
 | **G0DM0D3** | Multi-model racing — race up to 51 models in parallel | — |
 | **Onyx** | RAG-enhanced answers grounded in your connected data sources | — |
@@ -119,29 +119,26 @@ python models/downloader.py interactive
 The wizard detects your available RAM, suggests suitable models, searches HuggingFace, and downloads directly into the `models/` directory on the USB. You can also search and suggest from the command line:
 
 ```bash
-python models/downloader.py search "Qwen3 8B"
+python models/downloader.py search "Qwen3.5 9B"
 python models/downloader.py suggest --ram 8
 python models/downloader.py local              # list already-downloaded models
 ```
 
 **RAM-to-model tier reference** — carry-ai automatically selects the best model that fits your available RAM:
 
-| Available RAM | Recommended Model | Quantization |
-|--------------|-------------------|-------------|
-| 32 GB+ | Qwen3 30B | Q6_K |
-| 24 GB+ | Llama 4 Scout 17B | Q6_K |
-| 20 GB+ | Qwen3 14B | Q8_0 |
-| 16 GB+ | Gemma 4 12B | Q4_K_M |
-| 12 GB+ | Qwen3 14B | Q4_K_M |
-| 10 GB+ | Qwen3 8B | Q8_0 |
-| 8 GB+ | Qwen3 8B | Q4_K_M |
-| 6 GB+ | Gemma 4 E4B | Q4_K_M |
-| 5 GB+ | Qwen3.5 4B | Q4_K_M |
-| 4 GB+ | Phi-4-mini | Q4_K_M |
-| 3 GB+ | Gemma 4 E2B | Q4_K_M |
-| Under 3 GB | Gemma 3 1B | Q4_K_M |
+| Available RAM | Recommended Model | File |
+|--------------|-------------------|------|
+| 40 GB+ | Qwen3.6 35B-A3B (MoE) | Q8_0 |
+| 23 GB+ | Qwen3.6 35B-A3B (MoE) | Q4_K_M |
+| 17 GB+ | Gemma 4 26B-A4B (MoE) | QAT Q4_K_XL |
+| 14 GB+ | gpt-oss 20B (MoE) | MXFP4 |
+| 9 GB+ | Gemma 4 12B | Q4_K_M |
+| 7 GB+ | Qwen3.5 9B | Q4_K_M |
+| 5.5 GB+ | Gemma 4 E4B | QAT Q4_K_XL |
+| 3.5 GB+ | Qwen3.5 4B | Q4_K_M |
+| any | Qwen3.5 2B | Q4_K_M |
 
-Place `.gguf` files in the `models/` directory. carry-ai matches by filename stem — no configuration required.
+Exact Hugging Face repos and filenames are in `models/catalog.py`. Place `.gguf` files in the `models/` directory. carry-ai matches by filename stem — no configuration required.
 
 ---
 
@@ -157,11 +154,11 @@ Create `config/settings.json` on the USB to override defaults. Any field you omi
   "providers": {
     "anthropic": {
       "enabled": true,
-      "model": "claude-sonnet-4-6"
+      "model": "claude-opus-5"
     },
     "groq": {
       "enabled": true,
-      "model": "llama-3.3-70b-versatile"
+      "model": "openai/gpt-oss-20b"
     }
   },
 
@@ -315,10 +312,10 @@ Once the web UI is open, type a message and press Enter (or Shift+Enter for a ne
 carry-ai> /status
 
   Mode:     API
-  Provider: anthropic (claude-sonnet-4-6)
+  Provider: anthropic (claude-opus-5)
   Memory:   14 stored facts
   Tools:    22 registered (18 built-in, 4 MCP)
-  Session:  /tmp/ai_session/
+  Session:  /dev/shm/ai_session/
 
 carry-ai> /tools
 

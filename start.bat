@@ -2,16 +2,15 @@
 :: ============================================================
 :: carry-ai — Windows Launcher
 :: ============================================================
-:: Tries the native desktop app first.  If tkinter is unavailable
-:: (common with portable Python), falls back to the Flask web UI
-:: which auto-opens in your default browser.
+:: Boots carry-ai through launcher.py (session setup, eject watcher,
+:: wipe on exit). The native desktop app is used when tkinter is
+:: available; otherwise the web UI opens in an isolated browser window.
 :: ============================================================
 SETLOCAL EnableDelayedExpansion
 
 SET "USB_ROOT=%~dp0"
 SET "USB_ROOT=%USB_ROOT:~0,-1%"
 SET "USB_PYTHON=%USB_ROOT%\python-env\windows\python.exe"
-SET "DESKTOP=%USB_ROOT%\carry-ai\ui\desktop.py"
 SET "BOOTSTRAP=%USB_ROOT%\carry-ai\bootstrap.py"
 SET "LAUNCHER=%USB_ROOT%\carry-ai\launcher.py"
 
@@ -40,25 +39,11 @@ IF "%PY%"=="" (
     GOTO :EOF
 )
 
-:: ---- Try desktop app (requires tkinter) ----
-IF EXIST "%DESKTOP%" (
-    ECHO [carry-ai] Starting desktop app...
-    "%PY%" "%DESKTOP%" %*
-    SET "_ERR=!ERRORLEVEL!"
-    :: Exit code 0 = normal close, -1 = user closed window (also normal)
-    IF !_ERR! EQU 0 GOTO :EOF
-    IF !_ERR! EQU 255 GOTO :EOF
-    :: Any other non-zero = startup failure (missing tkinter, import error, etc.)
-    ECHO [carry-ai] Desktop app unavailable (exit code !_ERR!).
-    ECHO [carry-ai] Launching web UI instead — your browser will open automatically.
-    ECHO.
-)
-
-:: ---- Fall back to web UI (launcher auto-opens browser) ----
+:: ---- Launch (desktop app, falling back to the web UI) ----
 IF EXIST "%BOOTSTRAP%" (
-    "%PY%" "%BOOTSTRAP%" %*
+    "%PY%" "%BOOTSTRAP%" --ui desktop %*
 ) ELSE IF EXIST "%LAUNCHER%" (
-    "%PY%" "%LAUNCHER%" %*
+    "%PY%" "%LAUNCHER%" --ui desktop %*
 ) ELSE (
     ECHO [carry-ai] ERROR: Cannot find launcher.py
     ECHO  Expected at: %LAUNCHER%

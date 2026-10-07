@@ -4,19 +4,30 @@ carry-ai supports 7 LLM providers plus 2 voice service integrations. All chat pr
 
 Provider health is tracked per-session (success rate, average latency, consecutive failures). Providers with auth errors are skipped immediately; providers that are rate-limited are retried with exponential backoff before falling back.
 
+### Model discovery (why the lists below are only a fallback)
+
+Cloud model IDs are retired every few months, and a USB stick can sit in a drawer for longer than that. So each cloud provider asks its own model-list endpoint at runtime (5-second timeout) the first time it needs the list, filters it down to chat models, and keeps it **in memory only** for the session. Nothing is written to disk. If the endpoint can't be reached, the short built-in lists below are used instead.
+
+If the model in `providers.<name>.model` (or one picked in the UI) is no longer offered, carry-ai logs a warning and uses that provider's default model instead of failing. When the router falls back to another provider, that provider gets its own configured model, not the one meant for the first provider.
+
 ---
 
 ## Anthropic (Claude)
 
 | | |
 |---|---|
-| **Models** | `claude-opus-4-6`, `claude-sonnet-4-6`, `claude-haiku-4-5-20251001` |
-| **Default model** | `claude-sonnet-4-6` |
+| **Models** | `claude-opus-5`, `claude-sonnet-5`, `claude-haiku-4-5`, `claude-fable-5-1` (live list from `GET /v1/models`) |
+| **Default model** | `claude-opus-5` |
 | **Get key** | [console.anthropic.com](https://console.anthropic.com) → API Keys |
 | **Key format** | `sk-ant-api03-...` |
 | **Settings key** | `providers.anthropic.enabled`, `providers.anthropic.model` |
 
 Claude uses the Messages API (`POST /v1/messages`) with a top-level `system` parameter. Streaming is via Server-Sent Events. Tool use (function calling) is fully supported.
+
+Notes on the current models:
+- `claude-opus-5`, `claude-sonnet-5` and `claude-fable-5-1` reject `temperature` / `top_p` / `top_k`, so carry-ai doesn't send them. Only `claude-haiku-4-5` still gets them.
+- These models also reject assistant-message prefill (carry-ai drops a trailing assistant message), and `claude-fable-5-1` rejects forced `tool_choice`, which carry-ai turns into `auto`.
+- If Claude declines a request (`stop_reason: "refusal"`), the chat shows a clear message rather than an empty or partial reply.
 
 ```bash
 python crypto/keystore.py add anthropic
@@ -29,13 +40,19 @@ python crypto/keystore.py add anthropic
 
 | | |
 |---|---|
-| **Models** | `gpt-4o`, `gpt-4o-mini`, `o4-mini`, `o3`, `o3-mini`, `o1`, `gpt-4-turbo` |
-| **Default model** | `gpt-4o-mini` |
+| **Models** | `gpt-6-luna` (cheap, vision), `gpt-6-sol` (balanced), `gpt-6-astra` (flagship), `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna` (live list from `GET /v1/models`) |
+| **Default model** | `gpt-6-luna` |
 | **Get key** | [platform.openai.com](https://platform.openai.com) → API Keys |
 | **Key format** | `sk-...` |
 | **Settings key** | `providers.openai.enabled`, `providers.openai.model` |
 
 OpenAI uses the Chat Completions endpoint (`POST /v1/chat/completions`). The `base_url` can be overridden in `config/settings.json` for Azure OpenAI or local proxy setups.
+
+Request rules carry-ai applies automatically:
+- It sends `max_completion_tokens`, not `max_tokens`.
+- Reasoning models (`gpt-5*`, `gpt-6*`, `o*`) don't get `temperature` or `top_p`.
+- When tools are passed, `gpt-6-sol` and `gpt-6-luna` get `reasoning_effort: "none"`, which Chat Completions requires for function calling on those models.
+- `gpt-6-astra` can only call tools through the Responses API, which carry-ai doesn't use. Tool-using agent turns therefore run on `gpt-6-luna` (a warning is logged), and plain chat turns still use astra.
 
 ```bash
 python crypto/keystore.py add openai
@@ -48,8 +65,8 @@ python crypto/keystore.py add openai
 
 | | |
 |---|---|
-| **Models** | `gemini-2.5-pro`, `gemini-2.5-flash`, `gemini-2.0-flash`, `gemini-2.0-flash-lite` |
-| **Default model** | `gemini-2.5-flash` |
+| **Models** | `gemini-3.5-flash-lite`, `gemini-3.8-flash` (quality), `gemini-3.1-pro-preview` (no free tier), alias `gemini-flash-latest` (live list from `GET /v1beta/models`) |
+| **Default model** | `gemini-3.5-flash-lite` |
 | **Get key (API key)** | [aistudio.google.com](https://aistudio.google.com) → Get API Key |
 | **Get key (OAuth)** | Google Cloud Console → OAuth 2.0 credentials |
 | **Key format** | No fixed prefix (API key); OAuth uses a refresh token |
@@ -74,14 +91,16 @@ GoogleProvider.auth()
 
 The OAuth refresh token is stored in the keystore under `google.oauth_refresh_token` and refreshed automatically during sessions.
 
+Gemini 2.x models can't be used with new keys, so they have been removed. Gemini 3 models are tuned for the default temperature (1.0), so carry-ai doesn't send a custom `temperature` to them.
+
 ---
 
 ## Groq
 
 | | |
 |---|---|
-| **Models** | `llama-3.3-70b-versatile`, `llama-3.1-8b-instant`, `gemma2-9b-it`, `qwen-qwq-32b`, `mistral-saba-24b` |
-| **Default model** | `llama-3.3-70b-versatile` |
+| **Models** | `openai/gpt-oss-20b`, `openai/gpt-oss-120b` (flagship), `qwen/qwen3.8-27b` (vision, preview) (live list from `GET /openai/v1/models`, speech and guard models filtered out) |
+| **Default model** | `openai/gpt-oss-20b` |
 | **Get key** | [console.groq.com](https://console.groq.com) → API Keys |
 | **Key format** | `gsk_...` |
 | **Settings key** | `providers.groq.enabled`, `providers.groq.model` |
@@ -99,13 +118,15 @@ python crypto/keystore.py add groq
 
 | | |
 |---|---|
-| **Models** | `anthropic/claude-opus-4-6`, `anthropic/claude-sonnet-4-6`, `openai/gpt-4o`, `openai/o4-mini`, `google/gemini-2.5-pro`, `meta-llama/llama-3.3-70b-instruct`, `qwen/qwen3-32b`, `deepseek/deepseek-r1`, and 200+ more |
-| **Default model** | `anthropic/claude-sonnet-4-6` |
+| **Models** | `openrouter/free` (routes to free models), `google/gemma-4-31b-it:free`, `openrouter/auto`, and paid models such as `openai/gpt-6-luna`, `google/gemini-3.8-flash`, `anthropic/claude-opus-5.5` (live list from the public `GET /api/v1/models`) |
+| **Default model** | `openrouter/free` |
 | **Get key** | [openrouter.ai/keys](https://openrouter.ai/keys) |
 | **Key format** | `sk-or-...` |
 | **Settings key** | `providers.openrouter.enabled`, `providers.openrouter.model` |
 
 OpenRouter is a unified gateway that aggregates models from OpenAI, Anthropic, Google, Meta, Mistral, and many others under a single API key. It is useful for comparing outputs across providers and for accessing models from providers you haven't set up individually.
+
+The default, `openrouter/free`, works on a brand-new key with no credit. During model discovery, carry-ai skips `:batch` variants and any model whose `expiration_date` is in the past or less than 14 days away.
 
 ```bash
 python crypto/keystore.py add openrouter

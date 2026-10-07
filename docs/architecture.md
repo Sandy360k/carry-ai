@@ -8,9 +8,9 @@ carry-ai is a USB-resident AI assistant built around three principles: **zero ho
 
 | Principle | Implementation |
 |-----------|---------------|
-| Zero host footprint | Session copies run entirely in tmpfs (Linux) or `%TEMP%` (Windows) — nothing is permanently installed |
+| Minimal host footprint | Session lives in RAM-backed `/dev/shm` (Linux) or `%TEMP%` (Windows) — nothing is installed; OS-level execution/USB records can't be removed without admin (see README) |
 | RAM-only secrets | API keys are decrypted from `providers.enc` into RAM at boot and zeroed on shutdown |
-| Graceful eject | WMI/udev eject watchers trigger a 6-step nuclear wipe automatically |
+| Graceful eject | A portable eject poller (plus WMI on Windows) triggers the 6-step wipe; the wipe code is pre-loaded so it runs after the drive is gone |
 | Portability | Pure Python 3.10+, no build step, optional deps gracefully degraded |
 | Extensibility | Provider → BaseProvider, Tool → register_tool(), Plugin → plugin.json, MCP → settings.json |
 
@@ -255,7 +255,7 @@ loop → "Press Enter to speak, Ctrl+C to stop"
 | Threat | Mitigation |
 |--------|-----------|
 | API key exposure | Fernet AES-128-CBC + HMAC, PBKDF2-HMAC-SHA256 600k iters, RAM-only during session |
-| Host disk persistence | tmpfs (Linux) / %TEMP% (Windows) — wiped on eject |
+| Host disk persistence | /dev/shm (Linux, RAM) / %TEMP% (Windows) — wiped on exit and eject |
 | Clipboard leakage | Wipe step 3 of cleanup.py clears clipboard on eject |
 | Shell history | Cleanup step 4 removes session commands from ~/.bash_history |
 | Dangerous tool use | PermissionPolicy: 16 regex patterns, 3 modes (ask/yolo/safe) |

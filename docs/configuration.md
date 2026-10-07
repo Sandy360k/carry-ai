@@ -72,40 +72,45 @@ Place this file at `config/settings.json` on the USB drive (next to `carry-ai/`)
   "providers": {
     // Per-provider settings. "enabled" gates whether the provider is
     // loaded at all. "model" selects the default model for that provider.
+    // Model IDs are checked against the provider's live model list at
+    // runtime. A retired ID logs a warning and falls back to the
+    // provider's default, so an old settings.json keeps working.
 
     "anthropic": {
       "enabled": true,
-      "model": "claude-sonnet-4-6"
-      // Claude models: claude-opus-4, claude-sonnet-4-6, claude-haiku-4
+      "model": "claude-opus-5"
+      // Claude models: claude-opus-5, claude-sonnet-5, claude-haiku-4-5, claude-fable-5-1
     },
 
     "openai": {
       "enabled": true,
-      "model": "gpt-4o"
-      // OpenAI models: gpt-4o, gpt-4o-mini, o4-mini, o3
+      "model": "gpt-6-luna"
+      // OpenAI models: gpt-6-luna, gpt-6-sol, gpt-6-astra, gpt-5.6-sol/-terra/-luna
     },
 
     "google": {
       "enabled": true,
-      "model": "gemini-2.5-flash"
-      // Google models: gemini-2.5-pro, gemini-2.5-flash, gemini-2.0-flash
+      "model": "gemini-3.5-flash-lite"
+      // Google models: gemini-3.5-flash-lite, gemini-3.8-flash,
+      // gemini-3.1-pro-preview (no free tier), gemini-flash-latest
     },
 
     "groq": {
       "enabled": true,
-      "model": "llama-3.3-70b-versatile"
-      // Groq models: llama-3.3-70b-versatile, mixtral-8x7b, gemma2-9b
+      "model": "openai/gpt-oss-20b"
+      // Groq models: openai/gpt-oss-20b, openai/gpt-oss-120b, qwen/qwen3.8-27b (vision)
     },
 
     "openrouter": {
       "enabled": true,
-      "model": "anthropic/claude-sonnet-4"
-      // Any OpenRouter model string. "auto" lets OpenRouter choose.
+      "model": "openrouter/free"
+      // Any OpenRouter model string. "openrouter/free" routes to free models,
+      // "openrouter/auto" lets OpenRouter choose (paid).
     },
 
     "godmode": {
       "enabled": false,
-      "model": "anthropic/claude-sonnet-4-6",
+      "model": "anthropic/claude-opus-5.5",
       // Base URL for your local G0DM0D3 server (OpenAI-compatible).
       "base_url": "http://localhost:3000/v1",
       // autotune: let G0DM0D3 auto-detect query type and optimize sampling.

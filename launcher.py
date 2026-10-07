@@ -31,6 +31,7 @@ import argparse
 import logging
 import os
 import platform
+import secrets
 import signal
 import sys
 import threading
@@ -60,19 +61,6 @@ BANNER = r"""
                         |___/
   Portable AI Assistant — inject, assist, vanish.
 """
-
-# ---------------------------------------------------------------------------
-# Constants: model tiers (RAM threshold → preferred model filename stem)
-# ---------------------------------------------------------------------------
-MODEL_TIERS = [
-    {"min_ram_gb": 8, "name": "Qwen3 8B Q4", "stem": "qwen3-8b", "quant": "Q4_K_M"},
-    {"min_ram_gb": 6, "name": "Gemma 4 E4B Q4", "stem": "gemma-4-e4b", "quant": "Q4_K_M"},
-    {"min_ram_gb": 5, "name": "Qwen3.5 4B Q4", "stem": "qwen3.5-4b", "quant": "Q4_K_M"},
-    {"min_ram_gb": 4, "name": "Phi-4-mini Q4", "stem": "phi-4-mini", "quant": "Q4_K_M"},
-    {"min_ram_gb": 3, "name": "Gemma 4 E2B Q4", "stem": "gemma-4-e2b", "quant": "Q4_K_M"},
-    {"min_ram_gb": 0, "name": "Gemma 3 1B Q4", "stem": "gemma-3-1b", "quant": "Q4_K_M"},
-]
-
 
 # ===================================================================
 # Core detection functions
@@ -146,7 +134,9 @@ def scan_models(models_dir: Path) -> list[Path]:
     """
     if not models_dir.is_dir():
         return []
-    gguf_files = sorted(models_dir.glob("*.gguf"), key=lambda p: p.stat().st_size, reverse=True)
+    gguf_files = sorted(
+        (p for p in models_dir.glob("*.gguf") if "mmproj" not in p.name.lower()),
+        key=lambda p: p.stat().st_size, reverse=True)
     for f in gguf_files:
         size_gb = f.stat().st_size / (1024 ** 3)
         log.info("  Found model: %s (%.2f GB)", f.name, size_gb)
@@ -156,30 +146,16 @@ def scan_models(models_dir: Path) -> list[Path]:
 def select_model_for_ram(available_ram_gb: float, available_models: list[Path]) -> tuple[dict | None, Path | None]:
     """Pick the best model that fits the available RAM.
 
-    Matches available .gguf files against MODEL_TIERS by filename stem.
-    Falls back to the smallest available model if no tier matches.
+    Delegates to modes.local_mode.select_model, whose tiers come from the
+    shared catalogue in models/catalog.py.
 
     Returns:
         (tier_dict, model_path) or (None, None) if no models available.
     """
-    if not available_models:
-        return None, None
-
-    model_names_lower = {m.stem.lower(): m for m in available_models}
-
-    for tier in MODEL_TIERS:
-        if available_ram_gb < tier["min_ram_gb"]:
-            continue
-        # Try to find a matching model by stem substring
-        for stem_lower, model_path in model_names_lower.items():
-            if tier["stem"].replace("-", "").replace(".", "") in stem_lower.replace("-", "").replace(".", ""):
-                log.info("Selected model tier: %s → %s", tier["name"], model_path.name)
-                return tier, model_path
-
-    # Fallback: pick the smallest available model
-    smallest = min(available_models, key=lambda p: p.stat().st_size)
-    log.info("No tier match. Falling back to smallest model: %s", smallest.name)
-    return None, smallest
+    from dataclasses import asdict
+    from modes.local_mode import select_model
+    tier, model_path = select_model(available_ram_gb, available_models)
+    return (asdict(tier) if tier else None), model_path
 
 
 # ===================================================================
@@ -271,9 +247,11 @@ def inject_session(host_os: str, dry_run: bool = False) -> Path:
         session_dir, _watcher = win_inject(dry_run=dry_run)
         return session_dir
     else:
-        # Linux injection is handled by the shell script; here we call a
-        # Python wrapper that invokes it.
-        session_dir = Path("/tmp/ai_session")
+        # /dev/shm is a RAM-backed tmpfs on virtually every distro and needs
+        # no root, so session files never touch the host's disk.
+        shm = Path("/dev/shm")
+        base = shm if shm.is_dir() and os.access(shm, os.W_OK) else Path("/tmp")
+        session_dir = base / "ai_session"
         if not session_dir.exists():
             log.info("Creating session directory: %s", session_dir)
             session_dir.mkdir(parents=True, exist_ok=True)
@@ -371,30 +349,43 @@ def boot(args: argparse.Namespace) -> None:
         "plugin_tools": plugin_tools,
         "dry_run": args.dry_run,
         "port": args.port,
+        "no_ui": args.no_ui,
+        "ui_token": secrets.token_urlsafe(32),
+        "shutdown_event": threading.Event(),
     }
 
-    # --- Start agent ---
-    agent_thread = _start_agent(boot_context)
+    # Load the wipe code now: at eject time the USB (and its .py files) is
+    # already gone, so a lazy import would fail exactly when it matters.
+    from cleanup.cleanup import full_cleanup
+    boot_context["full_cleanup"] = full_cleanup
+    if not args.dry_run:
+        _start_eject_poller(boot_context)
+
+    use_desktop = not args.no_ui and args.ui == "desktop" and _desktop_available()
+
+    # --- Start agent (terminal REPL; the desktop app has its own chat) ---
+    agent_thread = None if use_desktop else _start_agent(boot_context)
 
     # --- Start web UI ---
     ui_thread = None
-    if not args.no_ui:
+    if not args.no_ui and not use_desktop:
         ui_thread = _start_ui(boot_context)
-        url = f"http://localhost:{args.port}"
+        url = f"http://localhost:{args.port}/?t={boot_context['ui_token']}"
         print(f"  Web UI: {url}")
 
-        # Auto-open browser after a short delay (give Flask time to bind)
-        import webbrowser
+        # Auto-open an isolated browser window after a short delay (give
+        # Flask time to bind); its profile lives in the session dir.
         def _open_browser():
             import time as _time
+            from ui.browser import open_private
             _time.sleep(1.5)
-            webbrowser.open(url)
+            print(f"  Opened in: {open_private(url, boot_context['session_dir'])}")
         threading.Thread(target=_open_browser, daemon=True).start()
 
     print("\n  carry-ai is running. Press Ctrl+C to stop.\n")
 
-    # --- Wait for shutdown signal ---
-    shutdown_event = threading.Event()
+    # --- Wait for shutdown signal (or the headless REPL exiting) ---
+    shutdown_event = boot_context["shutdown_event"]
 
     def _signal_handler(signum, frame):
         log.info("Received signal %s — shutting down.", signum)
@@ -404,7 +395,10 @@ def boot(args: argparse.Namespace) -> None:
     signal.signal(signal.SIGTERM, _signal_handler)
 
     try:
-        shutdown_event.wait()
+        if use_desktop:
+            _run_desktop(boot_context)
+        else:
+            shutdown_event.wait()
     except KeyboardInterrupt:
         pass
 
@@ -415,6 +409,55 @@ def boot(args: argparse.Namespace) -> None:
 # ===================================================================
 # Sub-step helpers (delegate to other modules)
 # ===================================================================
+
+def _start_eject_poller(context: dict, interval: float = 2.0) -> threading.Thread:
+    """Watch for the USB disappearing and trigger shutdown + cleanup.
+
+    Works on every OS without admin rights or extra packages: once the drive
+    is pulled, stat() on our own files fails. Complements the WMI watcher on
+    Windows and replaces the root-only udev rule on Linux.
+    """
+    probe = PROJECT_ROOT / "launcher.py"
+    shutdown_event = context["shutdown_event"]
+
+    def _poll():
+        while not shutdown_event.wait(interval):
+            try:
+                probe.stat()
+            except OSError:
+                log.warning("USB no longer reachable — cleaning up.")
+                context["ejected"] = True
+                shutdown_event.set()
+                return
+
+    t = threading.Thread(target=_poll, name="carry-ai-eject-poller", daemon=True)
+    t.start()
+    return t
+
+
+def _desktop_available() -> bool:
+    """True if the native desktop app can run (tkinter + a display)."""
+    try:
+        import tkinter  # noqa: F401
+    except ImportError:
+        log.info("tkinter not available — using the web UI instead.")
+        return False
+    if sys.platform != "win32" and not (os.environ.get("DISPLAY")
+                                        or os.environ.get("WAYLAND_DISPLAY")):
+        log.info("No display — using the web UI instead.")
+        return False
+    return True
+
+
+def _run_desktop(context: dict) -> None:
+    """Run the desktop app on the main thread until closed or ejected."""
+    from ui.desktop import CarryAIApp, ChatBackend
+    if isinstance(context.get("api_keys"), dict):
+        ChatBackend.preloaded_keys = context["api_keys"]
+    app = CarryAIApp()
+    app.close_when(context["shutdown_event"])
+    app.run()
+
 
 def _run_model_download(models_dir: Path) -> None:
     """Interactive model download from HuggingFace."""
@@ -476,6 +519,9 @@ def _init_mcp(config_dir: Path, dry_run: bool) -> list[dict]:
     except ImportError:
         log.info("MCP dependencies not installed. Skipping.")
         return []
+    except Exception as e:
+        log.error("MCP initialization failed, continuing without MCP: %s", e)
+        return []
 
 
 def _load_plugins(dry_run: bool) -> list[dict]:
@@ -485,16 +531,16 @@ def _load_plugins(dry_run: bool) -> list[dict]:
         return []
 
     try:
-        from plugins.loader import PluginLoader
-        loader = PluginLoader(search_dirs=[PROJECT_ROOT / "plugins" / "bundled"])
-        plugins = loader.load_all()
+        from plugins.manager import PluginManager
+        plugins = [m.to_dict() for m in PluginManager().boot()]
         log.info("Loaded %d plugin(s).", len(plugins))
         return plugins
-    except NotImplementedError:
-        log.info("Plugin loader not yet implemented. Skipping.")
-        return []
     except ImportError:
         log.info("Plugin dependencies not installed. Skipping.")
+        return []
+    except Exception as e:
+        # Plugins are optional — a broken one must never block boot
+        log.error("Plugin loading failed, continuing without plugins: %s", e)
         return []
 
 
@@ -510,6 +556,10 @@ def _start_agent(context: dict) -> threading.Thread:
             _fallback_shell(context)
         except Exception as e:
             log.error("Agent crashed: %s", e, exc_info=True)
+        # Headless: the REPL is the whole app, so quitting it (or stdin
+        # hitting EOF) ends the session. With a UI, keep serving.
+        if context.get("no_ui"):
+            context["shutdown_event"].set()
 
     t = threading.Thread(target=_agent_worker, name="carry-ai-agent", daemon=True)
     t.start()
@@ -560,7 +610,7 @@ def _fallback_shell(context: dict) -> None:
         print()
 
 
-def _shutdown(context: dict, agent_thread: threading.Thread,
+def _shutdown(context: dict, agent_thread: threading.Thread | None,
               ui_thread: threading.Thread | None) -> None:
     """Graceful shutdown and cleanup."""
     print("\n  Shutting down carry-ai...")
@@ -568,7 +618,9 @@ def _shutdown(context: dict, agent_thread: threading.Thread,
     # Attempt cleanup
     if not context.get("dry_run"):
         try:
-            from cleanup.cleanup import full_cleanup
+            full_cleanup = context.get("full_cleanup")
+            if full_cleanup is None:
+                from cleanup.cleanup import full_cleanup
             full_cleanup(session_dir=context.get("session_dir"), dry_run=False)
         except NotImplementedError:
             log.info("Cleanup module not yet implemented.")
@@ -591,6 +643,13 @@ def _shutdown(context: dict, agent_thread: threading.Thread,
         log.info("API keys zeroed from memory.")
 
     print("  Goodbye.\n")
+
+    if context.get("ejected"):
+        # The drive is gone: normal interpreter teardown would try to touch
+        # files on it and trip over threads blocked on stdin. Leave now.
+        sys.stdout.flush()
+        sys.stderr.flush()
+        os._exit(0)
 
 
 # ===================================================================
@@ -640,6 +699,13 @@ Examples:
         help="Headless mode — skip Flask web UI",
     )
     parser.add_argument(
+        "--ui",
+        choices=["web", "desktop"],
+        default="web",
+        help="Interface: 'desktop' (native window, falls back to web) or 'web' "
+             "(isolated browser window). Default: web",
+    )
+    parser.add_argument(
         "--verbose",
         action="store_true",
         default=False,
@@ -676,7 +742,15 @@ def main(argv: list[str] | None = None) -> None:
     """Main entry point."""
     args = parse_args(argv)
     setup_logging(verbose=args.verbose)
-    boot(args)
+    try:
+        boot(args)
+    except Exception:
+        # Don't leave a half-built session behind on the host
+        log.exception("Boot failed — wiping session before exit.")
+        if not args.dry_run:
+            from cleanup.cleanup import wipe_session_directory
+            wipe_session_directory(None)
+        raise
 
 
 if __name__ == "__main__":

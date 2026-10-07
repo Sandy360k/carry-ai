@@ -75,134 +75,14 @@ PYTHON_EMBED_URL_WIN64 = (
 GET_PIP_URL = "https://bootstrap.pypa.io/get-pip.py"
 
 # ---------------------------------------------------------------------------
-# GGUF model catalogue
+# GGUF model catalogue — shared with the boot selector (models/catalog.py),
+# listed smallest-first for the picker.
 # ---------------------------------------------------------------------------
-# Models marked gated=True require a HuggingFace token (Gemma, Llama).
-# The user is prompted for their token at download time if any gated
-# model is selected.  Get a token at: https://huggingface.co/settings/tokens
-# and accept the model license on its HuggingFace page first.
-GGUF_MODELS = [
-    # ── Tiny / emergency (≤2 GB RAM) ──────────────────────────────────────
-    {
-        "name": "Qwen2.5 1.5B Q4_K_M",
-        "ram_gb": 2, "size_gb": 1.1,
-        "description": "Tiny fallback — fits any machine",
-        "hf_repo": "Qwen/Qwen2.5-1.5B-Instruct-GGUF",
-        "hf_file": "qwen2.5-1.5b-instruct-q4_k_m.gguf",
-        "gated": False,
-    },
-    {
-        "name": "Gemma 3 1B Q4_K_M",
-        "ram_gb": 2, "size_gb": 0.8,
-        "description": "Google Gemma, tiny, good quality [needs HF token]",
-        "hf_repo": "bartowski/gemma-3-1b-it-GGUF",
-        "hf_file": "gemma-3-1b-it-Q4_K_M.gguf",
-        "gated": True,
-    },
-    # ── 3–4 GB RAM ──────────────────────────────────────────────────────────
-    {
-        "name": "Qwen2.5 3B Q4_K_M",
-        "ram_gb": 4, "size_gb": 2.0,
-        "description": "Good quality, 4 GB RAM",
-        "hf_repo": "Qwen/Qwen2.5-3B-Instruct-GGUF",
-        "hf_file": "qwen2.5-3b-instruct-q4_k_m.gguf",
-        "gated": False,
-    },
-    {
-        "name": "Phi-3.5 Mini Q4_K_M",
-        "ram_gb": 4, "size_gb": 2.2,
-        "description": "Microsoft Phi-3.5, great reasoning, 4 GB RAM",
-        "hf_repo": "bartowski/Phi-3.5-mini-instruct-GGUF",
-        "hf_file": "Phi-3.5-mini-instruct-Q4_K_M.gguf",
-        "gated": False,
-    },
-    # ── 5–6 GB RAM ──────────────────────────────────────────────────────────
-    {
-        "name": "Phi-4-mini Q4_K_M",
-        "ram_gb": 5, "size_gb": 2.4,
-        "description": "Strong reasoning + tool calling, 5 GB RAM",
-        "hf_repo": "bartowski/Phi-4-mini-instruct-GGUF",
-        "hf_file": "Phi-4-mini-instruct-Q4_K_M.gguf",
-        "gated": False,
-    },
-    {
-        "name": "Mistral 7B v0.3 Q4_K_M",
-        "ram_gb": 6, "size_gb": 4.4,
-        "description": "Mistral's classic 7B — fast, reliable, 6 GB RAM",
-        "hf_repo": "bartowski/Mistral-7B-Instruct-v0.3-GGUF",
-        "hf_file": "Mistral-7B-Instruct-v0.3-Q4_K_M.gguf",
-        "gated": False,
-    },
-    {
-        "name": "Gemma 4 E4B Q4_K_M",
-        "ram_gb": 6, "size_gb": 3.1,
-        "description": "Multimodal vision, 6 GB RAM [needs HF token]",
-        "hf_repo": "bartowski/gemma-4-e4b-GGUF",
-        "hf_file": "gemma-4-e4b-Q4_K_M.gguf",
-        "gated": True,
-    },
-    {
-        "name": "Qwen2.5 7B Q4_K_M",
-        "ram_gb": 6, "size_gb": 4.7,
-        "description": "Strong all-around model, 6 GB RAM",
-        "hf_repo": "Qwen/Qwen2.5-7B-Instruct-GGUF",
-        "hf_file": "qwen2.5-7b-instruct-q4_k_m.gguf",
-        "gated": False,
-    },
-    # ── 8–10 GB RAM ─────────────────────────────────────────────────────────
-    {
-        "name": "Llama 3.1 8B Q4_K_M",
-        "ram_gb": 8, "size_gb": 4.9,
-        "description": "Meta Llama 3.1 — excellent general purpose [needs HF token]",
-        "hf_repo": "bartowski/Meta-Llama-3.1-8B-Instruct-GGUF",
-        "hf_file": "Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf",
-        "gated": True,
-        "license_url": "https://huggingface.co/meta-llama/Meta-Llama-3.1-8B-Instruct",
-        "license_note": "Accept Meta license at meta-llama/Meta-Llama-3.1-8B-Instruct",
-    },
-    {
-        "name": "DeepSeek-R1 7B Q4_K_M",
-        "ram_gb": 8, "size_gb": 4.7,
-        "description": "DeepSeek reasoning model, great for code+math, 8 GB RAM",
-        "hf_repo": "bartowski/DeepSeek-R1-Distill-Qwen-7B-GGUF",
-        "hf_file": "DeepSeek-R1-Distill-Qwen-7B-Q4_K_M.gguf",
-        "gated": False,
-    },
-    {
-        "name": "Qwen2.5 7B Q8_0",
-        "ram_gb": 10, "size_gb": 8.1,
-        "description": "High quality 7B, 10 GB RAM",
-        "hf_repo": "Qwen/Qwen2.5-7B-Instruct-GGUF",
-        "hf_file": "qwen2.5-7b-instruct-q8_0.gguf",
-        "gated": False,
-    },
-    # ── 12+ GB RAM ──────────────────────────────────────────────────────────
-    {
-        "name": "Qwen2.5 14B Q4_K_M",
-        "ram_gb": 12, "size_gb": 9.0,
-        "description": "Best quality, 12 GB RAM, tool calling",
-        "hf_repo": "Qwen/Qwen2.5-14B-Instruct-GGUF",
-        "hf_file": "qwen2.5-14b-instruct-q4_k_m.gguf",
-        "gated": False,
-    },
-    {
-        "name": "Mistral Nemo 12B Q4_K_M",
-        "ram_gb": 12, "size_gb": 7.1,
-        "description": "Mistral + Nvidia 12B — multilingual, long context, 12 GB RAM",
-        "hf_repo": "bartowski/Mistral-Nemo-Instruct-2407-GGUF",
-        "hf_file": "Mistral-Nemo-Instruct-2407-Q4_K_M.gguf",
-        "gated": False,
-    },
-    # ── Coding specialist ───────────────────────────────────────────────────
-    {
-        "name": "DeepSeek-Coder-V2 Lite Q4_K_M",
-        "ram_gb": 12, "size_gb": 9.7,
-        "description": "Best open-source coding model, 12 GB RAM",
-        "hf_repo": "bartowski/DeepSeek-Coder-V2-Lite-Instruct-GGUF",
-        "hf_file": "DeepSeek-Coder-V2-Lite-Instruct-Q4_K_M.gguf",
-        "gated": False,
-    },
-]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+from models.catalog import CATALOG, mmproj_filename, mmproj_url, recommend_for_ram  # noqa: E402
+
+GGUF_MODELS = sorted(CATALOG, key=lambda m: m["ram_gb"])
 
 # ---------------------------------------------------------------------------
 # LocalAI binary catalogue
@@ -521,6 +401,14 @@ def download_gguf_model(model: dict, models_dir: Path, hf_token: str = "") -> bo
     console.print(f"  Downloading {model['name']} (~{model['size_gb']:.1f} GB) ...")
     console.print(f"    URL: {url}")
     ok = download_file_with_progress(url, dest, model["hf_file"], hf_token=hf_token)
+    if ok and model.get("mmproj"):
+        # Vision projector, stored as <model stem>.mmproj.gguf (see catalog)
+        proj_dest = models_dir / mmproj_filename(model)
+        if not proj_dest.exists():
+            console.print("  Downloading vision projector ...")
+            if not download_file_with_progress(mmproj_url(model), proj_dest,
+                                               proj_dest.name, hf_token=hf_token):
+                console.print("  [yellow]Vision projector failed — text chat still works.[/yellow]")
     if not ok:
         console.print(
             f"  [yellow]Tip:[/yellow] If this is a gated model (Gemma, Llama), you need a\n"
@@ -666,9 +554,9 @@ SET "USB_ROOT=%USB_ROOT:~0,-1%"
 SET "USB_PYTHON=%USB_ROOT%\python-env\windows\python.exe"
 SET "BOOTSTRAP=%USB_ROOT%\carry-ai\bootstrap.py"
 IF EXIST "%USB_PYTHON%" (
-    "%USB_PYTHON%" "%BOOTSTRAP%" %*
+    "%USB_PYTHON%" "%BOOTSTRAP%" --ui desktop %*
 ) ELSE (
-    WHERE python >/dev/null 2>&1 && python "%BOOTSTRAP%" %* || (
+    WHERE python >nul 2>&1 && python "%BOOTSTRAP%" --ui desktop %* || (
         echo [carry-ai] Python not found. Install from https://python.org or run setup_usb.py.
         PAUSE
     )
@@ -684,7 +572,7 @@ BOOTSTRAP="$SCRIPT_DIR/carry-ai/bootstrap.py"
 [ -d "$USB_SITE" ] && export PYTHONPATH="$USB_SITE${PYTHONPATH:+:$PYTHONPATH}"
 PY=$(command -v python3 || command -v python || echo "")
 [ -z "$PY" ] && { echo "[carry-ai] Python 3.10+ required."; exit 1; }
-exec "$PY" "$BOOTSTRAP" "$@"
+exec "$PY" "$BOOTSTRAP" --ui desktop "$@"
 """
 
 _AUTORUN = "[autorun]\nopen=start.bat\nlabel=carry-ai\n"
@@ -808,10 +696,7 @@ def main() -> None:
     _step(2, "Configure Flash")
 
     console.print(f"  Host RAM available : [bold]{host_ram:.1f} GB[/bold]")
-    recommended = next(
-        (m for m in reversed(GGUF_MODELS) if m["ram_gb"] <= host_ram),
-        GGUF_MODELS[0],
-    )
+    recommended = recommend_for_ram(host_ram)
     console.print(f"  Recommended model  : [bold]{recommended['name']}[/bold] ({recommended['description']})\n")
 
     want_win   = _confirm("  Bundle portable Python for Windows? (~400 MB, no Python needed on host)", default=True)
@@ -1049,7 +934,7 @@ def add_models_wizard(target_path: str) -> None:
 
     # Show catalogue
     ram = detect_host_ram()
-    recommended = next((m for m in reversed(GGUF_MODELS) if m["ram_gb"] <= ram), GGUF_MODELS[0])
+    recommended = recommend_for_ram(ram)
 
     console.print(f"  Host RAM: [bold]{ram:.1f} GB[/bold]")
     console.print(f"  Recommended: [bold]{recommended['name']}[/bold]\n")

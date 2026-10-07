@@ -40,11 +40,16 @@ log = logging.getLogger("carry-ai.cleanup")
 # Session directory names we recognize as ours (safety check)
 VALID_SESSION_NAMES = {"ai_session", "_dry_run_session"}
 
-# Process name patterns to kill
+# Inference servers we start. They are killed only when they are our own
+# descendants or their binary lives on the USB / in the session dir — never
+# by a bare command-line match, which could hit the user's shell or editor.
 PROCESS_KILL_PATTERNS = [
     "llama-server", "llama_server", "llama-server.exe",
-    "carry-ai", "ai_session",
+    "local-ai", "local-ai.exe",
 ]
+
+# carry-ai/ on the USB and the drive root above it
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 
 # ===================================================================
@@ -76,27 +81,23 @@ def _kill_via_psutil(dry_run: bool) -> int:
     """Kill carry-ai processes using psutil."""
     killed = 0
     our_pid = os.getpid()
+    try:
+        descendants = {c.pid for c in psutil.Process(our_pid).children(recursive=True)}
+    except (psutil.NoSuchProcess, psutil.AccessDenied):
+        descendants = set()
+    our_roots = tuple(str(p).lower() for p in (PROJECT_ROOT.parent, _detect_session_dir()))
 
-    for proc in psutil.process_iter(["pid", "name", "cmdline"]):
+    for proc in psutil.process_iter(["pid", "name", "exe"]):
         try:
             pid = proc.info["pid"]
             name = (proc.info["name"] or "").lower()
-            cmdline = " ".join(proc.info["cmdline"] or []).lower()
+            exe = (proc.info["exe"] or "").lower()
 
             if pid == our_pid:
                 continue
 
-            # Check if this is one of our processes
-            is_ours = False
-            for pattern in PROCESS_KILL_PATTERNS:
-                if pattern in name or pattern in cmdline:
-                    is_ours = True
-                    break
-
-            # Also check for flask/python processes serving our UI
-            if "ai_session" in cmdline or "carry-ai" in cmdline:
-                is_ours = True
-
+            is_server = any(pattern in name for pattern in PROCESS_KILL_PATTERNS)
+            is_ours = pid in descendants or (is_server and exe.startswith(our_roots))
             if not is_ours:
                 continue
 
@@ -152,9 +153,13 @@ def _kill_via_os_commands(dry_run: bool) -> int:
     for pattern in PROCESS_KILL_PATTERNS:
         try:
             if host_os == "windows":
+                if not pattern.endswith(".exe"):
+                    continue
                 cmd = ["taskkill", "/F", "/IM", pattern, "/T"]
             else:
-                cmd = ["pkill", "-f", pattern]
+                if pattern.endswith(".exe"):
+                    continue
+                cmd = ["pkill", "-x", pattern]  # exact name, not cmdline
 
             if dry_run:
                 log.info("[dry-run] Would run: %s", " ".join(cmd))
@@ -257,7 +262,8 @@ def _detect_session_dir() -> Path:
         temp = os.environ.get("TEMP", os.environ.get("TMP", "C:\\Temp"))
         return Path(temp) / "ai_session"
     else:
-        return Path("/tmp/ai_session")
+        shm = Path("/dev/shm/ai_session")
+        return shm if shm.exists() else Path("/tmp/ai_session")
 
 
 # ===================================================================
@@ -465,9 +471,8 @@ def _remove_udev_rule() -> None:
 def zero_sensitive_memory(secrets: dict | list | None = None) -> None:
     """Overwrite sensitive data in memory before releasing references.
 
-    Uses ctypes.memset to zero the underlying buffer of Python strings
-    and bytes objects. This is best-effort — Python's memory manager may
-    have already copied the data.
+    Drops every reference so the values can be garbage-collected. Python
+    offers no safe way to overwrite str/bytes in place; see _zero_string.
 
     Args:
         secrets: Dict or list of sensitive values to zero. Can be nested.
@@ -500,34 +505,13 @@ def zero_sensitive_memory(secrets: dict | list | None = None) -> None:
 
 
 def _zero_string(s) -> None:
-    """Best-effort zero of a string or bytes object in memory."""
-    try:
-        if isinstance(s, str):
-            # CPython internal: string data starts at offset after header
-            # This is fragile and CPython-specific, but better than nothing
-            buf = ctypes.cast(id(s), ctypes.POINTER(ctypes.c_char))
-            # String header size varies; we zero a generous range
-            str_len = len(s)
-            if str_len > 0:
-                # PyUnicodeObject compact ASCII: data at offset 48 (CPython 3.11+)
-                for offset in (48, 52, 56):
-                    try:
-                        ctypes.memset(id(s) + offset, 0, str_len)
-                        break
-                    except (ValueError, OSError):
-                        continue
-        elif isinstance(s, bytes):
-            buf_len = len(s)
-            if buf_len > 0:
-                # PyBytesObject: data at offset 32 (CPython 3.11+)
-                for offset in (32, 36, 40):
-                    try:
-                        ctypes.memset(id(s) + offset, 0, buf_len)
-                        break
-                    except (ValueError, OSError):
-                        continue
-    except Exception:
-        pass  # Best-effort only
+    """Deliberately a no-op.
+
+    Python str/bytes are immutable and often copied or interned, so writing
+    zeros at guessed CPython object offsets (the previous approach) could
+    corrupt the interpreter without reliably erasing anything. Dropping the
+    references (done by the caller) is the safe best effort.
+    """
 
 
 # ===================================================================
