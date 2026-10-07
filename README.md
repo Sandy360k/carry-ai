@@ -122,7 +122,7 @@ Mode is auto-detected from what's available, or forced with `--mode`.
 - **Offline-capable** — local GGUF inference via llama.cpp, 12 RAM tiers auto-selected
 - **5 cloud providers** — Anthropic, OpenAI, Google, Groq, OpenRouter (plus G0DM0D3 and Onyx behind the experimental flag)
 - **Automatic failover** — health-tracked provider chain with exponential backoff
-- **Voice mode** — push-to-talk → AssemblyAI transcription → Claude vision → ElevenLabs TTS
+- **Voice mode** — push-to-talk; speech-to-text and text-to-speech offline (sherpa-onnx) or in the cloud (AssemblyAI / ElevenLabs), switchable
 - **30+ agent tools** — shell, files, web scraping, screenshots, clipboard (Google Workspace behind the experimental flag)
 - **Persistent memory** — SQLite + FTS5, survives sessions, dedup + relevance decay
 - **MCP support** — connect any MCP server via stdio or Streamable HTTP (MCP 2026-07-28; legacy HTTP+SSE still works)
@@ -176,42 +176,23 @@ On a USB mounted `noexec` (common for Linux exFAT/FAT automounts), `start.sh` co
 
 ## Voice Mode
 
-Push-to-talk AI with screen awareness — ported from [farzaa/clicky](https://github.com/farzaa/clicky) (Swift/macOS) to Python:
+Push-to-talk, ported from [farzaa/clicky](https://github.com/farzaa/clicky): click **🎤** next to the message box (or press **Ctrl+M**), speak, click **■**. What you said is sent to the agent, and replies can be read aloud.
 
-```
-Hold Enter → speak → release Enter
-      │
-      ▼  AssemblyAI
-  transcript text
-      │
-      ├──► screenshot (base64 PNG) ──► Claude vision
-      │
-      ▼  Claude response
-  spoken aloud via ElevenLabs
-```
+Each direction can run **offline** (on this PC, nothing leaves it) or in the **cloud**, switchable in the app's **Voice** settings (Auto / Offline / Cloud / Off):
 
-**Setup** (the onboarding wizard does this for you):
-```bash
-pip install pyaudio assemblyai elevenlabs Pillow
-```
+| | Offline (sherpa-onnx, models on the USB) | Cloud (needs a key + internet) |
+|---|---|---|
+| Speech → text | Moonshine v2 tiny (44 MB) or base (141 MB), English | AssemblyAI |
+| Text → speech | KittenTTS nano (42 MB) or Kokoro (215 MB, multi-lingual) | ElevenLabs |
 
-**Keys needed:**
-- [AssemblyAI](https://assemblyai.com) — free 5 hours/month
-- [ElevenLabs](https://elevenlabs.io) — free 10,000 characters/month
+**Auto** (the default) uses the offline model when it's downloaded, otherwise the cloud service if you've added its key. Models are downloaded from the Voice settings, `onboard.py`, the flasher, or `python models/voice.py get moonshine-tiny-en`. They're pinned to a Hugging Face commit and checksum-verified, and stored in `models/voice/`.
 
-**Enable in `config/settings.json`:**
-```json
-{
-  "voice": {
-    "enabled": true,
-    "assemblyai_key": "your-key",
-    "elevenlabs_key": "your-key",
-    "vision_enabled": true
-  }
-}
-```
+- **Recording:** PyAudio on Windows (bundled). On Linux it uses sherpa-onnx's own ALSA reader, so no PortAudio is needed.
+- **Playback:** PyAudio, or Windows' built-in `winsound` / Linux `aplay` (or `paplay`). Audio is played from memory and never written to the host's disk.
+- **Offline transcription** reads audio straight from memory. Cloud transcription writes a WAV to the session folder and deletes it right after upload.
+- **Cloud keys** (AssemblyAI, ElevenLabs) go into the encrypted keystore, never `settings.json`.
 
-All voice dependencies are optional — carry-ai runs fully without them. Implementation: [`integrations/voice_tools.py`](integrations/voice_tools.py).
+Implementation: [`integrations/voice_tools.py`](integrations/voice_tools.py), [`ui/voice_ui.py`](ui/voice_ui.py), [`models/voice.py`](models/voice.py).
 
 ---
 
@@ -305,13 +286,20 @@ ReAct-pattern agent loop (Observe → Think → Act → Observe) with 30+ tools:
 | Category | Tools |
 |----------|-------|
 | **System** | `shell`, `get_system_info`, `model_recommend` |
+| **Code** | `run_python` — sandboxed Python ([Monty](https://github.com/pydantic/monty)): no network or processes; `/work` scratch folder in the session dir; with host access on, your Desktop/Documents/Downloads are readable at `/host`; 10 s / 256 MB limits; variables persist between calls |
+
+**Sandbox switch** — the **Access** button in the chat window (also in the web UI's Settings, or `/sandbox on|off` in the terminal) chooses what the AI may touch:
+
+- **🔒 Sandboxed:** only tools that can't reach this PC — `run_python` on `/work`, web fetch, memory.
+- **🔓 Host access:** files, shell, screen and clipboard as well, with the usual permission prompts.
+
+Set the starting state with `sandbox.start_sandboxed`.
 | **Files** | `read_file`, `write_file`, `edit_file`, `list_files`, `search_files` |
 | **Screen** | `screenshot`, `click`, `type_text` |
 | **Clipboard** | `clipboard_read`, `clipboard_write` |
 | **Web** | `web_fetch`, `browse`, `scrape`, `scrape_stealth` (Scrapling-enhanced) |
 | **Google** | `gdrive_list/upload`, `gmail_search/send/read`, `gsheets_read/append`, `gcalendar_agenda/create` |
 | **Memory** | `memory_store`, `memory_search`, `memory_list` |
-| **Voice** | `voice_listen`, `voice_speak` (when voice mode enabled) |
 
 **Permission modes:**
 
@@ -407,6 +395,27 @@ Embedded SPA (vanilla HTML/CSS/JS) — no build step, no node_modules. Inspired 
 
 ## MCP Integration
 
+### Desktop control (built in)
+
+With the flasher's **desktop control** option, carry-ai starts a desktop-control MCP server, so the AI can see and operate apps on the PC. It reads the accessibility tree (buttons, fields and menus by name), not just screenshots, so it also works with local models that have no vision.
+
+| | Server | Notes |
+|---|---|---|
+| **Windows** | [Windows-MCP](https://github.com/CursorTouch/Windows-MCP) 0.8.5 (UI Automation) | ~220 MB. Runs on the USB's Python from its own folder. Telemetry off; no user-id file. |
+| **Linux** | [computer-use-linux](https://github.com/agent-sh/computer-use-linux) 0.7.12 (AT-SPI, X11 + Wayland) | 9 MB binary per architecture, pinned SHA-256. Needs glibc 2.39+ (Ubuntu 24.04, Fedora 40 or newer); on older systems it simply isn't started. |
+
+Its tools appear as `mcp__desktop__*`: snapshot / app state, click, type, keys, scroll, drag, windows, screenshot.
+
+- **What's available:** every Windows-MCP tool — including PowerShell, Registry, Process, FileSystem, Scrape, Clipboard and Notification — under the permission mode:
+  - Registry writes/deletes, process kills, file deletes/moves and overwriting an existing file ask first in `ask` mode, are blocked in `safe` mode and run freely in `yolo`.
+  - PowerShell commands get the same dangerous-command check as carry-ai's own shell.
+- **No trace left behind:** toasts the AI shows are tagged and removed from the Action Center on cleanup (only carry-ai's — your own notifications are untouched), and the clipboard is wiped on eject. On Linux only the GNOME Shell extension installer is left out (it writes into the home folder).
+- **Accessibility setting:** on Linux the AI may switch GNOME accessibility on so apps expose their controls. carry-ai records the setting at boot and puts it back on cleanup.
+- **Sandbox switch:** like every MCP tool, desktop control is hidden when the chat's sandbox switch is on.
+- **Turning it off:** set `"mcp": {"desktop_control": false}`.
+
+### Your own servers
+
 Connect external MCP servers for additional tools:
 
 ```json
@@ -429,7 +438,7 @@ Connect external MCP servers for additional tools:
 ```
 
 - **Transports** — stdio (subprocess) and Streamable HTTP (MCP 2026-07-28: stateless, no handshake, `MCP-Protocol-Version`/`Mcp-Method`/`Mcp-Name` headers). A `"transport": "sse"` entry is accepted but treated as Streamable HTTP, and the client falls back to the legacy `initialize` handshake for 2025-era servers.
-- **Auto-discovery** — tools registered as `mcp__{server}__{tool}`
+- **Auto-discovery** — servers connect in the background at boot; tools registered as `mcp__{server}__{tool}` (drop any with `"exclude_tools": [...]`, turn a server off with `"enabled": false`)
 - **Thread-safe registry** — concurrent access from agent and UI threads
 - **Env var resolution** — `$VAR` references expanded at connect time
 
@@ -574,10 +583,11 @@ carry-ai/
 │   └── app.py               # Flask SPA at localhost:8080
 
 ├── integrations/
-│   ├── voice_tools.py       # Push-to-talk voice pipeline (clicky port)
+│   ├── voice_tools.py       # Push-to-talk voice: offline (sherpa-onnx) or cloud STT/TTS
 │   ├── scrapling_tools.py   # Adaptive web scraping
 │   ├── gworkspace_tools.py  # Google Workspace API
-│   └── llmfit_advisor.py    # Hardware-aware model selection
+│   ├── llmfit_advisor.py    # Hardware-aware model selection
+│   └── python_sandbox.py    # run_python tool (pydantic-monty sandbox)
 
 ├── mcp/                     # MCP client (stdio/HTTP/SSE)
 ├── plugins/                 # Plugin loader + manager
@@ -611,7 +621,7 @@ carry-ai/
 - Python 3.10+
 - For local mode: [llama-server](https://github.com/ggerganov/llama.cpp) binary + a GGUF model file
 - For API mode: at least one provider API key
-- For voice mode: `pip install pyaudio assemblyai elevenlabs Pillow`
+- For voice mode: `pip install sherpa-onnx` (+ `pyaudio` on Windows), then download the voice models in the app
 
 ```bash
 pip install -r requirements.txt        # Full install

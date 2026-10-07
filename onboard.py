@@ -554,83 +554,76 @@ def _save_keys_encrypted(keys: dict[str, str]) -> None:
 
 def setup_voice_mode() -> dict:
     """
-    Explain the voice pipeline and collect voice-specific API keys.
+    Explain the voice pipeline and choose offline and/or cloud speech.
 
-    Pipeline (inspired by farzaa/clicky):
-        Push-to-talk → AssemblyAI transcription → Claude vision → ElevenLabs TTS
+    Offline speech (sherpa-onnx, models on the USB) needs no account and
+    sends nothing anywhere; cloud speech (AssemblyAI / ElevenLabs) needs
+    keys, which go into the encrypted keystore, never settings.json.
 
-    Returns a config dict (may be empty / {'enabled': False} if user opts out).
+    Returns the non-secret ``voice`` settings ({} if the user opts out).
     """
     _panel(
-        "carry-ai includes an optional push-to-talk voice pipeline:\n\n"
-        "  1. [bold]Record[/bold]     — hold Enter to capture mic audio (PyAudio)\n"
-        "  2. [bold]Transcribe[/bold] — AssemblyAI converts speech → text\n"
-        "  3. [bold]Vision[/bold]     — optional screenshot attached to every query\n"
-        "  4. [bold]Speak[/bold]      — ElevenLabs TTS reads the agent response aloud\n\n"
-        "Inspired by farzaa/clicky (https://github.com/farzaa/clicky).",
-        title="Voice Pipeline",
+        "carry-ai has an optional push-to-talk voice mode (🎤 in the app, Ctrl+M):\n\n"
+        "  1. [bold]Record[/bold]     — your microphone (PyAudio)\n"
+        "  2. [bold]Transcribe[/bold] — offline on this PC (sherpa-onnx Moonshine)\n"
+        "                  or in the cloud (AssemblyAI)\n"
+        "  3. [bold]Speak[/bold]      — replies read aloud offline (Kitten / Kokoro)\n"
+        "                  or in the cloud (ElevenLabs)\n\n"
+        "Each direction can be switched between Auto / Offline / Cloud / Off later\n"
+        "in the app's Voice settings. Inspired by farzaa/clicky.",
+        title="Voice",
         style="magenta",
     )
     _print()
 
-    # Show which supporting packages are already available
-    has_pyaudio = _check_import("pyaudio")
-    has_assemblyai = _check_import("assemblyai")
-    has_elevenlabs = _check_import("elevenlabs")
-
     rows = [
-        ["pyaudio", TICK if has_pyaudio else CROSS, "microphone recording"],
-        ["assemblyai", TICK if has_assemblyai else CROSS, "speech-to-text (required for voice)"],
-        ["elevenlabs", TICK if has_elevenlabs else WARN, "text-to-speech (optional)"],
+        ["pyaudio", TICK if _check_import("pyaudio") else CROSS, "microphone + playback"],
+        ["sherpa_onnx", TICK if _check_import("sherpa_onnx") else WARN, "offline speech"],
     ]
     _table(["Package", "Status", "Purpose"], rows)
     _print()
 
-    enable = _prompt("Enable voice mode? [y/N]: ").strip().lower()
+    enable = _prompt("Set up voice? [y/N]: ").strip().lower()
     if enable not in ("y", "yes"):
-        _print("[dim]Voice mode skipped.[/dim]\n")
+        _print("[dim]Voice skipped — you can turn it on later in the app.[/dim]\n")
         return {}
 
-    voice_config: dict = {}
+    voice: dict = {"stt_backend": "auto", "tts_backend": "auto"}
 
-    # AssemblyAI key
-    _print("\n[cyan]AssemblyAI[/cyan] — https://www.assemblyai.com  (free tier available)")
+    # Offline models (default ones: ~44 MB + ~42 MB)
     try:
-        aai_key = getpass.getpass("  AssemblyAI API key (blank to skip): ").strip()
-    except (KeyboardInterrupt, EOFError):
-        _print()
-        sys.exit(0)
+        from models import voice as vm
+        if _prompt(f"Download the offline voice models now (~"
+                   f"{vm.get_model(vm.DEFAULT_STT).size_mb + vm.get_model(vm.DEFAULT_TTS).size_mb}"
+                   f" MB)? [Y/n]: ").strip().lower() not in ("n", "no"):
+            for model_id in (vm.DEFAULT_STT, vm.DEFAULT_TTS):
+                if vm.is_installed(model_id):
+                    continue
+                _print(f"  Downloading {model_id}…")
+                vm.download(model_id, progress=lambda d, t, _p: print(
+                    f"\r    {d * 100 // max(t, 1):3d}%", end="", flush=True))
+                _print("  [green]done[/green]")
+    except Exception as exc:
+        _print(f"[yellow]Offline models not downloaded ({exc}). "
+               "Use the app's Voice settings later.[/yellow]")
 
-    if aai_key:
-        voice_config["assemblyai_key"] = aai_key
-        _print("  [green]AssemblyAI key stored.[/green]")
-    else:
-        _print("  [yellow]No AssemblyAI key — transcription will be unavailable.[/yellow]")
+    # Optional cloud keys -> encrypted keystore
+    keys: dict[str, str] = {}
+    for name, label, url in (("assemblyai", "AssemblyAI (speech-to-text)", "https://www.assemblyai.com"),
+                             ("elevenlabs", "ElevenLabs (text-to-speech)", "https://elevenlabs.io")):
+        _print(f"\n[cyan]{label}[/cyan] — {url}  (optional cloud alternative)")
+        try:
+            key = getpass.getpass("  API key (blank to skip): ").strip()
+        except (KeyboardInterrupt, EOFError):
+            _print()
+            sys.exit(0)
+        if key:
+            keys[name] = key
+    if keys:
+        _save_keys_encrypted(keys)
 
-    # ElevenLabs key (optional)
-    _print("\n[cyan]ElevenLabs[/cyan] — https://elevenlabs.io  (optional, for TTS)")
-    try:
-        el_key = getpass.getpass("  ElevenLabs API key (blank to skip): ").strip()
-    except (KeyboardInterrupt, EOFError):
-        _print()
-        sys.exit(0)
-
-    if el_key:
-        voice_config["elevenlabs_key"] = el_key
-        _print("  [green]ElevenLabs key stored.[/green]")
-    else:
-        _print("  [dim]No ElevenLabs key — TTS will be silent.[/dim]")
-
-    if not has_pyaudio or not has_assemblyai:
-        _print(
-            "\n[yellow]Warning:[/yellow] one or more voice packages are missing.\n"
-            "Install them with:\n"
-            "  pip install pyaudio assemblyai elevenlabs\n"
-        )
-
-    voice_config["enabled"] = True
-    _print("\n[green]Voice mode configured.[/green]\n")
-    return voice_config
+    _print("\n[green]Voice configured.[/green]\n")
+    return voice
 
 
 # ---------------------------------------------------------------------------
@@ -661,15 +654,8 @@ def generate_config(mode: str, voice_config: dict) -> None:
         },
     }
 
-    if voice_config.get("enabled"):
-        settings["voice"] = {
-            "enabled": True,
-            "assemblyai_key": voice_config.get("assemblyai_key", ""),
-            "elevenlabs_key": voice_config.get("elevenlabs_key", ""),
-            "elevenlabs_voice_id": "21m00Tcm4TlvDq8ikWAM",  # Rachel
-            "tts_enabled": bool(voice_config.get("elevenlabs_key")),
-            "vision_enabled": True,
-        }
+    if voice_config:
+        settings["voice"] = dict(voice_config)   # no keys: those are in providers.enc
 
     config_dir = PROJECT_ROOT / "config"
     config_dir.mkdir(exist_ok=True)

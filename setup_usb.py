@@ -122,13 +122,15 @@ MODEL_PACKAGES = [
 TOOL_PACKAGES = [
     "pyautogui>=0.9.54",
     "pyperclip>=1.8.2",
+    "pydantic-monty>=1.1.0",   # run_python sandbox
 ]
 VOICE_PACKAGES = [
-    "assemblyai>=0.24.0",
-    "elevenlabs>=1.2.0",
+    "sherpa-onnx>=1.13.8",   # offline speech-to-text / text-to-speech
+    "pyaudio>=0.2.14",       # mic + speaker on Windows (no Linux wheel; Linux
+                             # records via sherpa-onnx ALSA and plays via aplay)
+    "elevenlabs>=2.0.0",     # optional cloud TTS
     "Pillow>=10.0.0",
 ]
-# pyaudio needs portaudio system lib — handled separately with instructions
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 if str(PROJECT_ROOT) not in sys.path:
@@ -280,8 +282,9 @@ def _pkg_to_import(pkg_name: str) -> str:
         "rich": "rich",
         "anthropic": "anthropic",
         "openai": "openai",
-        "assemblyai": "assemblyai",
         "elevenlabs": "elevenlabs",
+        "sherpa-onnx": "sherpa_onnx",
+        "pyaudio": "pyaudio",
     }
     return mapping.get(pkg_name, pkg_name.replace("-", "_"))
 
@@ -459,8 +462,10 @@ def main() -> None:
     install_providers = _confirm("  LLM provider SDKs (anthropic, openai, google-auth, groq, openrouter)?", default=True)
     install_models    = _confirm("  Model management (huggingface-hub)?", default=True)
     install_tools     = _confirm("  Agent tools (pyautogui, pyperclip)?", default=True)
-    install_voice     = _confirm("  Voice pipeline (assemblyai, elevenlabs, Pillow)?", default=False)
+    install_voice     = _confirm("  Voice (offline speech with sherpa-onnx + ~86 MB of models)?", default=False)
     setup_llama       = _confirm("  llama.cpp for local models (Vulkan GPU + CPU, ~140 MB/OS)?", default=True)
+    setup_desktop     = _confirm("  Desktop control — lets the AI see and operate apps "
+                                 "(Windows ~220 MB, Linux ~18 MB)?", default=True)
 
     packages_to_install = list(CORE_PACKAGES)
     if install_providers:
@@ -511,6 +516,15 @@ def main() -> None:
             except (OSError, ValueError) as e:
                 console.print(f"  [yellow]⚠ llama.cpp download failed: {e}[/yellow]")
 
+        if setup_desktop:
+            try:
+                runtime.install_desktop_control(usb_root, os_name, cache,
+                                                progress=_progress(f"desktop-{os_name}"))
+                print()
+                console.print(f"  [green]✓ Desktop control bundled for {os_name}.[/green]")
+            except (OSError, ValueError, RuntimeError) as e:
+                console.print(f"  [yellow]⚠ Desktop control not installed: {e}[/yellow]")
+
         size = _dir_size_mb(usb_root / "python-env" / os_name)
         console.print(f"  {os_name.capitalize()} env size: {size:.0f} MB")
 
@@ -518,19 +532,18 @@ def main() -> None:
     console.rule("Launcher scripts")
     write_launchers(usb_root)
 
-    # ---- pyaudio note ------------------------------------------------------
+    # ---- Offline voice models ---------------------------------------------
     if install_voice:
-        print()
-        _panel(
-            "pyaudio (voice recording)",
-            "pyaudio requires a system-level PortAudio library and cannot be\n"
-            "bundled on the USB. Users will need to install it once:\n\n"
-            "  Linux:  sudo apt install portaudio19-dev && pip install pyaudio\n"
-            "  macOS:  brew install portaudio && pip install pyaudio\n"
-            "  Windows: pip install pyaudio  (wheel includes PortAudio)\n\n"
-            "All other voice deps (assemblyai, elevenlabs, Pillow) are bundled.",
-            style="yellow"
-        )
+        try:
+            from models import voice as vm
+            for model_id in (vm.DEFAULT_STT, vm.DEFAULT_TTS):
+                if not vm.is_installed(model_id):
+                    console.print(f"  Downloading voice model {model_id}…")
+                    vm.download(model_id)
+            console.print("  [green]✓ Offline voice models ready[/green]")
+        except Exception as e:
+            console.print(f"  [yellow]Voice models not downloaded ({e}); "
+                          "use the app's Voice settings later.[/yellow]")
 
     # ---- Summary -----------------------------------------------------------
     console.rule("Done")

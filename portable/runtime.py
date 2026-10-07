@@ -33,6 +33,7 @@ Design notes:
 Stdlib only — imported by flash_usb.py on hosts with a bare Python.
 """
 
+import contextlib
 import hashlib
 import logging
 import os
@@ -42,6 +43,7 @@ import stat
 import subprocess
 import sys
 import tarfile
+import tempfile
 import zipfile
 from pathlib import Path, PurePosixPath
 from urllib.request import Request, urlopen
@@ -90,9 +92,32 @@ LLAMA_ASSETS: dict[str, list[tuple[str, str, str]]] = {
     ],
 }
 
+# Desktop control (default MCP server per OS, see mcp/defaults.py) ------------
+# Windows: CursorTouch/Windows-MCP (MIT, Python, UI Automation tree). 0.8.5 is
+# the last release that allows Python 3.12; fastmcp/mcp pinned to its lock
+# file. Installed in its OWN folder, never carry-ai's site-packages: it
+# brings the MCP SDK, whose top-level package is also called `mcp`.
+WINDOWS_MCP_REQUIREMENTS = ["windows-mcp==0.8.5", "fastmcp==3.4.5", "mcp==1.28.1"]
+
+# Linux: agent-sh/computer-use-linux (MIT, Rust, AT-SPI + X11/Wayland input).
+# A static-ish binary; needs glibc 2.39+ (Ubuntu 24.04 / Fedora 40 or newer).
+DESKTOP_LINUX_VERSION = "0.7.12"
+_DESKTOP_LINUX_BASE = ("https://github.com/agent-sh/computer-use-linux/releases/"
+                       f"download/v{DESKTOP_LINUX_VERSION}/")
+DESKTOP_LINUX_ASSETS: dict[str, tuple[str, str]] = {
+    "x86_64": ("computer-use-linux-x86_64-unknown-linux-gnu",
+               "0dde1b20d2f191307353e823f4b2f4277873708f075310b044a7ebd1a763003d"),
+    "aarch64": ("computer-use-linux-aarch64-unknown-linux-gnu",
+                "6fdb7f30391858b825c48f039b40908e6ff144800dcf250fc2a218775564c458"),
+}
+DESKTOP_LINUX_MIN_GLIBC = (2, 39)
+
 # pip tags for cross-installing wheels that match the bundled interpreter
 PIP_PLATFORMS: dict[str, list[str]] = {
-    "linux": ["manylinux_2_17_x86_64", "manylinux2014_x86_64"],
+    # 2_28 last: pip prefers earlier tags, so it is used only for packages
+    # with no older wheel (pydantic-monty-runtime). Needs glibc 2.28+
+    # (Debian 10 / Ubuntu 18.10 / RHEL 8 or newer).
+    "linux": ["manylinux_2_17_x86_64", "manylinux2014_x86_64", "manylinux_2_28_x86_64"],
     "windows": ["win_amd64"],
 }
 
@@ -105,6 +130,13 @@ SOURCE_ONLY: dict[str, dict[str, list[str]]] = {
         "windows": ["pymsgbox", "pytweening", "pyscreeze", "mouseinfo",
                     "pygetwindow", "pyrect"],
     },
+}
+
+# Packages that only have wheels for some OSes. PyAudio has no Linux wheel
+# (it needs the PortAudio dev headers); on Linux the voice pipeline records
+# through sherpa-onnx's own ALSA reader and plays through aplay instead.
+ONLY_ON: dict[str, set[str]] = {
+    "pyaudio": {"windows"},
 }
 
 
@@ -135,6 +167,61 @@ def site_packages(usb_root: Path, os_name: str) -> Path:
 
 def llama_dir(usb_root: Path, os_name: str, backend: str) -> Path:
     return Path(usb_root) / "bin" / "llama" / f"{os_name}-{backend}"
+
+
+def server_dir(usb_root: Path, os_name: str, name: str) -> Path:
+    """Isolated package folder for a bundled MCP server (own deps, own path)."""
+    return Path(usb_root) / "python-env" / os_name / "servers" / name
+
+
+def desktop_linux_binary(usb_root: Path, arch: str) -> Path:
+    return Path(usb_root) / "bin" / "desktop" / f"linux-{arch}" / "computer-use-linux"
+
+
+def glibc_version() -> tuple[int, int] | None:
+    """(major, minor) of the host glibc, or None (musl / not Linux)."""
+    try:
+        name, version = os.confstr("CS_GNU_LIBC_VERSION").split()
+        major, minor = version.split(".")[:2]
+        return int(major), int(minor)
+    except (AttributeError, ValueError, OSError):
+        return None
+
+
+def ensure_executable(path: Path, session_dir: str | None = None,
+                      whole_dir: bool = False) -> Path:
+    """A path *path* can be executed from.
+
+    On a Linux USB mounted noexec (common for FAT/exFAT automounts) a binary
+    can't run in place, so it is copied into the RAM session dir (wiped on
+    eject) and that copy is returned. ``whole_dir`` copies its folder too,
+    for binaries that load shared libraries next to them (llama-server).
+    Windows and normal mounts: unchanged.
+    """
+    path = Path(path)
+    if os.name == "nt" or os.access(path, os.X_OK):
+        return path
+    session = session_dir or os.environ.get("CARRY_AI_SESSION_DIR")
+    if not session:
+        return path
+    try:
+        if whole_dir:
+            staged_dir = Path(session) / "bin" / path.parent.name
+            if not (staged_dir / path.name).is_file():
+                shutil.copytree(path.parent, staged_dir, dirs_exist_ok=True)
+            for f in staged_dir.iterdir():
+                if f.is_file():
+                    f.chmod(0o755)
+            return staged_dir / path.name
+        staged = Path(session) / "bin" / path.name
+        if not staged.is_file() or staged.stat().st_size != path.stat().st_size:
+            staged.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(path, staged)
+        staged.chmod(0o755)
+        return staged
+    except OSError as e:
+        log.warning("Could not stage %s for execution: %s", path, e)
+        return path
 
 
 # ===================================================================
@@ -352,6 +439,43 @@ def install_llama(usb_root: Path, os_name: str, cache_dir: Path,
     return written
 
 
+def install_desktop_control(usb_root: Path, os_name: str, cache_dir: Path,
+                            progress=None) -> list[Path]:
+    """Put the default desktop-control MCP server for *os_name* on the USB.
+
+    Windows: Windows-MCP into python-env/windows/servers/windows-mcp/ (one pip
+    run, so its pins resolve together; ~220 MB). Linux: the pinned
+    computer-use-linux binaries for x86_64 and aarch64 (~9 MB each).
+    Returns what was written.
+    """
+    if os_name == "windows":
+        target = server_dir(usb_root, os_name, "windows-mcp")
+        marker = target / ".carry-ai-server"
+        wanted = " ".join(WINDOWS_MCP_REQUIREMENTS)
+        if not (marker.is_file() and marker.read_text().strip() == wanted):
+            if target.exists():
+                shutil.rmtree(target)
+            target.mkdir(parents=True)
+            cmd = pip_install_command(WINDOWS_MCP_REQUIREMENTS, target, os_name)
+            result = subprocess.run(cmd, capture_output=True, text=True)
+            if result.returncode != 0:
+                raise RuntimeError("Windows-MCP install failed: "
+                                   + (result.stderr or result.stdout).strip()[-300:])
+            marker.write_text(wanted)
+        return [target]
+
+    written = []
+    for arch, (name, sha) in DESKTOP_LINUX_ASSETS.items():
+        dest = desktop_linux_binary(usb_root, arch)
+        download(_DESKTOP_LINUX_BASE + name, Path(cache_dir) / name, sha, progress)
+        if not (dest.is_file() and sha256_file(dest) == sha):
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(Path(cache_dir) / name, dest)
+        _make_executable(dest)
+        written.append(dest)
+    return written
+
+
 def pip_install_command(packages: list[str], target: Path, os_name: str,
                         source_build: bool = False) -> list[str]:
     """pip argv that installs *packages* for the bundled interpreter of *os_name*."""
@@ -380,18 +504,53 @@ def install_packages(packages: list[str], usb_root: Path, os_name: str,
     target.mkdir(parents=True, exist_ok=True)
     failed = []
     for pkg in packages:
-        name = re.split(r"[<>=!~\[ ]", pkg, maxsplit=1)[0].strip()
-        if name.lower() in SOURCE_ONLY:
-            deps = SOURCE_ONLY[name.lower()][os_name]
-            cmd = pip_install_command([pkg, *deps], target, os_name, source_build=True)
-        else:
-            cmd = pip_install_command([pkg], target, os_name)
-        result = subprocess.run(cmd, capture_output=True, text=True)
-        ok = result.returncode == 0
-        if not ok:
-            failed.append(name)
-            log.warning("pip failed for %s (%s): %s", name, os_name,
-                        (result.stderr or result.stdout).strip()[-300:])
-        if report:
-            report(name, ok)
+        with _keep_scripts(target):
+            _install_one(pkg, target, os_name, failed, report)
     return failed
+
+
+@contextlib.contextmanager
+def _keep_scripts(target: Path):
+    """Keep earlier packages' scripts across one ``pip --target --upgrade``.
+
+    pip replaces the whole ``<target>/bin`` (``Scripts`` on Windows) folder
+    with the one from the package it is installing, so a later package with
+    a script (cffi's cffi-gen-src) wiped an earlier one's binary (the monty
+    worker, llmfit). Copies of what was there are put back afterwards.
+    """
+    saved = []
+    with tempfile.TemporaryDirectory() as tmp:
+        for name in ("bin", "Scripts"):
+            folder = target / name
+            if folder.is_dir():
+                backup = Path(tmp) / name
+                shutil.copytree(folder, backup)
+                saved.append((folder, backup))
+        try:
+            yield
+        finally:
+            for folder, backup in saved:
+                folder.mkdir(exist_ok=True)
+                for item in backup.iterdir():
+                    dest = folder / item.name
+                    if not dest.exists():
+                        shutil.copy2(item, dest)
+
+
+def _install_one(pkg: str, target: Path, os_name: str, failed: list, report) -> None:
+    name = re.split(r"[<>=!~\[ ]", pkg, maxsplit=1)[0].strip()
+    if os_name not in ONLY_ON.get(name.lower(), {os_name}):
+        return
+    if name.lower() in SOURCE_ONLY:
+        deps = SOURCE_ONLY[name.lower()][os_name]
+        cmd = pip_install_command([pkg, *deps], target, os_name, source_build=True)
+    else:
+        cmd = pip_install_command([pkg], target, os_name)
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    ok = result.returncode == 0
+    if not ok:
+        failed.append(name)
+        log.warning("pip failed for %s (%s): %s", name, os_name,
+                    (result.stderr or result.stdout).strip()[-300:])
+    if report:
+        report(name, ok)

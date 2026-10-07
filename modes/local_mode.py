@@ -263,7 +263,12 @@ def find_llama_server() -> Path | None:
             candidate = d / name
             if candidate.is_file():
                 log.info("Found llama-server: %s", candidate)
-                return candidate
+                try:
+                    # noexec USB: run a RAM copy of the folder (its .so files too)
+                    from portable.runtime import ensure_executable
+                    return ensure_executable(candidate, whole_dir=True)
+                except ImportError:
+                    return candidate
 
     # Try system PATH
     which_result = shutil.which("llama-server") or shutil.which("llama_server")

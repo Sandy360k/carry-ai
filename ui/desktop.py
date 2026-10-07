@@ -130,6 +130,8 @@ class ChatBackend:
     # Boot context from launcher.py (mode, model_path, api_keys, ...); the
     # Agent is built from it so the desktop app shares the web UI's engine.
     boot_context: dict = {}
+    # Chat-window sandbox switch; None = the setting's default
+    sandboxed: bool | None = None
 
     @classmethod
     def key_for(cls, provider: str) -> str:
@@ -181,6 +183,8 @@ class ChatBackend:
                 ctx["api_keys"] = self.preloaded_keys
             agent = Agent(boot_context=ctx)
             agent._policy._confirm_fn = self._gui_confirm   # GUI, not stdin
+            if self.sandboxed is not None:
+                agent.set_sandboxed(self.sandboxed)
             self._agent = agent
         return self._agent
 
@@ -279,11 +283,21 @@ class CarryAIApp:
         # ── Layout ──
         self._build_ui()
 
+        # ── Voice (offline sherpa-onnx or cloud, see ui/voice_ui.py) ──
+        try:
+            from ui.voice_ui import VoiceController
+            self.voice = VoiceController(self._root, lambda: ChatBackend.preloaded_keys,
+                                         self._on_voice_transcript, self._update_status)
+        except Exception as e:      # voice is optional; never block the chat
+            log.warning("Voice unavailable: %s", e)
+            self.voice = None
+
         # ── Keyboard shortcuts ──
         self._root.bind("<Control-n>", lambda e: self._new_conversation())
         self._root.bind("<Control-l>", lambda e: self._clear_chat())
         self._root.bind("<Control-e>", lambda e: self._export_chat())
         self._root.bind("<Escape>", lambda e: self._on_escape())
+        self._root.bind("<Control-m>", lambda e: self._toggle_mic())
 
         # ── Start ──
         self._poll_queue()
@@ -398,6 +412,19 @@ class CarryAIApp:
         self._model_menu.pack(padx=14, pady=(0, 8), fill="x")
         self._refresh_provider_menu()
 
+        # Sandbox switch: what the AI may touch on this PC
+        self._lbl(sb, "Access")
+        from agent.agent import start_sandboxed_default
+        if ChatBackend.sandboxed is None:
+            ChatBackend.sandboxed = start_sandboxed_default()
+        self._sandbox_btn = tk.Button(sb, command=self._toggle_sandbox, relief="flat",
+                                      font=(FONT_FAMILY, 10, "bold"), cursor="hand2")
+        self._sandbox_btn.pack(padx=14, fill="x")
+        self._sandbox_note = tk.Label(sb, font=(FONT_FAMILY, 9), fg=self.C["fg3"],
+                                      bg=self.C["bg2"], wraplength=185, justify="left")
+        self._sandbox_note.pack(padx=14, pady=(3, 0), anchor="w")
+        self._show_sandbox()
+
         self._sep(sb)
 
         # Status
@@ -408,7 +435,8 @@ class CarryAIApp:
         self._dot.pack(side="left", padx=(0, 6))
         self._dot.create_oval(1, 1, 9, 9, fill=self.C["accent"], outline="")
         self._status_lbl = tk.Label(sf, text="Ready", font=(FONT_FAMILY, 11),
-                                     fg=self.C["fg2"], bg=self.C["bg2"])
+                                     fg=self.C["fg2"], bg=self.C["bg2"],
+                                     wraplength=170, justify="left")
         self._status_lbl.pack(side="left")
 
         # Token/timing info
@@ -432,6 +460,7 @@ class CarryAIApp:
         btns = [
             ("Models", self._open_model_manager, self.C["accent2"]),
             ("API Keys", self._open_api_keys, self.C["accent2"]),
+            ("Voice", self._open_voice_settings, self.C["accent2"]),
             ("Export Chat", self._export_chat, self.C["border"]),
             ("Web UI", self._open_web_ui, self.C["border"]),
         ]
@@ -527,7 +556,8 @@ class CarryAIApp:
             insertbackground=self.C["fg"], selectbackground=self.C["accent2"],
             font=(FONT_FAMILY, 13), relief="flat", padx=14, pady=10,
         )
-        self._input_text.pack(side="left", fill="both", expand=True)
+        # Packed last (end of this method): an expanding widget packed first
+        # takes all the width and the buttons get none.
 
         # Auto-grow input
         self._input_text.bind("<KeyRelease>", self._auto_grow_input)
@@ -542,6 +572,12 @@ class CarryAIApp:
         # Button frame (stacked vertically for send + stop)
         btn_f = tk.Frame(inner, bg=self.C["bg3"])
         btn_f.pack(side="right", padx=(10, 0))
+
+        # Push-to-talk: click to talk, click again to send (Ctrl+M)
+        self._mic_btn = tk.Button(inner, text="🎤", width=3, command=self._toggle_mic,
+                                  bg=self.C["bg2"], fg=self.C["fg"], relief="flat",
+                                  font=(FONT_FAMILY, 14), cursor="hand2")
+        self._mic_btn.pack(side="right", padx=(10, 0), fill="y")
 
         if CTK:
             self._send_btn = ctk.CTkButton(btn_f, text="Send ▶", width=80, height=36,
@@ -565,6 +601,7 @@ class CarryAIApp:
 
         self._input_text.bind("<Return>", self._on_enter)
         self._input_text.bind("<Shift-Return>", lambda e: None)
+        self._input_text.pack(side="left", fill="both", expand=True)
 
     def _auto_grow_input(self, event=None):
         lines = int(self._input_text.index("end-1c").split(".")[0])
@@ -588,6 +625,11 @@ class CarryAIApp:
         return "break"
 
     def _on_escape(self):
+        try:
+            from integrations.voice_tools import stop_speaking
+            stop_speaking()
+        except Exception:
+            pass
         if self._streaming:
             self._stop_generation()
         else:
@@ -781,6 +823,9 @@ class CarryAIApp:
                     self._chat_text.configure(state="disabled")
                     self._streaming = False
                     self._stream_buf = []
+
+                    if full_text and self.voice is not None:
+                        self.voice.maybe_speak_reply(full_text)
 
                     # Save to conversation
                     if full_text:
@@ -978,6 +1023,50 @@ class CarryAIApp:
 
     def _open_api_keys(self):
         ApiKeysDialog(self)
+
+    # ── Sandbox ──
+    def _show_sandbox(self):
+        on = bool(ChatBackend.sandboxed)
+        self._sandbox_btn.config(
+            text="🔒 Sandboxed" if on else "🔓 Host access",
+            bg=self.C["accent"] if on else self.C["accent2"], fg="#111")
+        self._sandbox_note.config(text=(
+            "The AI can't touch this PC: Python runs in a sandbox, plus web and memory."
+            if on else
+            "The AI can use files, shell and screen here, and asks before risky steps."))
+
+    def _toggle_sandbox(self):
+        ChatBackend.sandboxed = not ChatBackend.sandboxed
+        agent = self.backend._agent
+        if agent is not None:
+            agent.set_sandboxed(ChatBackend.sandboxed)
+        self._show_sandbox()
+        self._update_status("Sandbox on" if ChatBackend.sandboxed else "Host access on", True)
+
+    # ── Voice ──
+    def _toggle_mic(self):
+        if self.voice is None:
+            self._update_status("Voice is not available in this build.", False)
+            return
+        recording = self.voice.toggle_recording()
+        self._mic_btn.config(text="■" if recording else "🎤",
+                             bg=self.C["error"] if recording else self.C["bg2"])
+
+    def _on_voice_transcript(self, text: str):
+        self._mic_btn.config(text="🎤", bg=self.C["bg2"])
+        self._on_focus_in()
+        self._input_text.delete("1.0", "end")
+        self._input_text.insert("1.0", text)
+        if self.voice.auto_send and not self._streaming:
+            self._send_message()
+
+    def _open_voice_settings(self):
+        from ui.voice_ui import VoiceSettingsDialog
+        VoiceSettingsDialog(self)
+
+    def on_voice_settings_changed(self):
+        if self.voice is not None:
+            self.voice.reload()
 
     def on_keys_changed(self, added: list[str] | None = None):
         """Keys were added/removed in the API keys window."""

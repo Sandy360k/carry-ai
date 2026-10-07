@@ -74,10 +74,27 @@ class Tool:
 # Global tool registry: name -> Tool
 TOOL_REGISTRY: dict[str, Tool] = {}
 
+# Tools that cannot touch this PC's files, programs, screen or input, so they
+# stay available in sandbox mode (Agent.set_sandboxed). Everything else —
+# shell, file tools, click/type, clipboard, browse, plugins, MCP tools — is
+# hidden from the model and refused while sandboxed. Allow-list on purpose:
+# a new tool is host-touching until it is marked safe here or registered
+# with sandbox_safe=True.
+SANDBOX_SAFE_TOOLS: set[str] = {
+    "run_python",            # Monty sandbox; /work only (no /host while sandboxed)
+    "web_fetch", "scrape",   # network reads, nothing local
+    "get_system_info", "model_recommend",
+    "memory_store", "memory_search", "memory_list",
+}
+
 
 def register_tool(name: str, description: str, parameters: dict,
-                  execute_fn: callable, required: list[str] | None = None) -> None:
-    """Register a tool (used by built-ins, plugins, and MCP bridge)."""
+                  execute_fn: callable, required: list[str] | None = None,
+                  sandbox_safe: bool = False) -> None:
+    """Register a tool (used by built-ins, plugins, and MCP bridge).
+
+    sandbox_safe: the tool cannot reach the host PC (see SANDBOX_SAFE_TOOLS).
+    """
     TOOL_REGISTRY[name] = Tool(
         name=name,
         description=description,
@@ -85,11 +102,18 @@ def register_tool(name: str, description: str, parameters: dict,
         execute_fn=execute_fn,
         required=required,
     )
+    if sandbox_safe:
+        SANDBOX_SAFE_TOOLS.add(name)
 
 
-def get_tool_definitions() -> list[dict]:
-    """Return all registered tool schemas for the LLM."""
-    return [tool.schema() for tool in TOOL_REGISTRY.values()]
+def is_sandbox_safe(name: str) -> bool:
+    return name in SANDBOX_SAFE_TOOLS
+
+
+def get_tool_definitions(sandboxed: bool = False) -> list[dict]:
+    """Return registered tool schemas for the LLM (only safe ones if sandboxed)."""
+    return [tool.schema() for tool in TOOL_REGISTRY.values()
+            if not sandboxed or tool.name in SANDBOX_SAFE_TOOLS]
 
 
 def execute_tool(name: str, args: dict | str) -> str:
@@ -663,6 +687,7 @@ def _register_integrations() -> None:
         - Scrapling (D4Vinci/Scrapling) — adaptive web scraping
         - Google Workspace CLI (googleworkspace/cli) — Drive, Gmail, Sheets, Calendar
         - llmfit (AlexsJones/llmfit) — hardware-aware model recommendations
+        - Monty (pydantic/monty) — run_python, a sandboxed Python interpreter
 
     Each integration gracefully degrades if its dependency is not installed.
     """
@@ -689,6 +714,13 @@ def _register_integrations() -> None:
         log.debug("Google Workspace integration not loaded (module not found)")
     except Exception as e:
         log.debug("Google Workspace integration error: %s", e)
+
+    # Python sandbox (pydantic/monty): adds run_python
+    try:
+        from integrations.python_sandbox import register_python_sandbox_tool
+        register_python_sandbox_tool(register_tool)
+    except Exception as e:
+        log.debug("Python sandbox not loaded: %s", e)
 
     # llmfit: adds model_recommend tool
     try:

@@ -58,9 +58,12 @@ carry-ai/
 ├── ui/
 │   ├── app.py               # Flask SPA at localhost:8080 (token + Host guard, HTML/CSS/JS embedded)
 │   ├── browser.py           # Opens the web UI in an isolated app window (throwaway profile)
+│   ├── voice_ui.py          # Desktop voice: 🎤 push-to-talk controller + Voice settings dialog
 │   └── desktop.py           # Native desktop chat app — drives the same Agent as the web UI (customtkinter/tkinter), run by launcher.py
 
 ├── mcp/
+│   ├── bridge.py            # Boot: connect servers in the background, publish tools to the agent
+│   ├── defaults.py          # Built-in "desktop" server: Windows-MCP / computer-use-linux
 │   ├── client.py            # JSON-RPC transport: stdio + Streamable HTTP (MCP 2026-07-28, legacy-handshake fallback)
 │   ├── config.py            # MCP server configuration loader
 │   └── registry.py          # Thread-safe MCP tool registry
@@ -73,6 +76,7 @@ carry-ai/
 │   ├── scrapling_tools.py   # Adaptive web scraping (anti-bot bypass)
 │   ├── gworkspace_tools.py  # Google Workspace API (Drive, Gmail, Sheets, Calendar)
 │   ├── llmfit_advisor.py    # Hardware-aware model selection
+│   ├── python_sandbox.py    # run_python tool: sandboxed Python (pydantic-monty worker process)
 │   └── voice_tools.py       # Voice pipeline: push-to-talk → ASR → vision → TTS (farzaa/clicky)
 
 ├── cowork/
@@ -89,6 +93,7 @@ carry-ai/
 ├── models/
 │   ├── catalog.py           # Local model catalogue — single source of truth for RAM tiers
 │   ├── registry.py          # Downloaded-model registry (verify, active model)
+│   ├── voice.py             # Offline voice models (sherpa-onnx): pinned catalogue + downloader
 │   └── downloader.py        # HuggingFace GGUF browser & downloader
 
 ├── crypto/
@@ -306,7 +311,7 @@ Three modes controlled by `settings.agent.permission_mode`:
 - `yolo` — Execute all tools without confirmation
 - `safe` — Block dangerous patterns outright
 
-`PermissionPolicy` checks 16 regex patterns before tool execution (e.g., `rm -rf`, `format`, `DROP TABLE`, `git push --force`).
+`PermissionPolicy` checks 16 regex patterns before tool execution (e.g., `rm -rf`, `format`, `DROP TABLE`, `git push --force`). Before it, the sandbox switch (`Agent.set_sandboxed`, note 19) can hide every tool that touches the host.
 
 ---
 
@@ -328,22 +333,17 @@ When making changes, use `python launcher.py --dry-run --verbose` to validate th
 
 ## Voice Pipeline (`integrations/voice_tools.py`)
 
-Inspired by [farzaa/clicky](https://github.com/farzaa/clicky) — a push-to-talk macOS AI assistant. The Python port provides the same pipeline:
+Inspired by [farzaa/clicky](https://github.com/farzaa/clicky). Push-to-talk → speech-to-text → agent → text-to-speech, with each direction switchable between **offline** and **cloud**:
 
-**Flow**: Push-to-talk recording → AssemblyAI transcription → screenshot (base64) → Claude vision → ElevenLabs TTS playback
-
-**Key classes**:
-- `VoiceConfig` — dataclass: keys, voice_id, vision_enabled, max_recording_seconds
-- `AudioRecorder` — PyAudio recording on a daemon thread; main thread blocks on `input()` for PTT
-- `Transcriber` — AssemblyAI REST (upload → submit → poll); falls back to placeholder string if unavailable
-- `ScreenCapture` — `PIL.ImageGrab` → `pyautogui.screenshot()` fallback, returns base64 PNG
-- `TTSPlayer` — ElevenLabs SDK → REST streaming fallback → silent no-op
-- `VoicePipeline` — chains all four; `run_loop()` for continuous PTT session
-- `is_voice_available()` — returns per-component availability dict for graceful degradation
-
-All optional deps (pyaudio, assemblyai, elevenlabs, PIL) are guarded with try/except. The pipeline silently degrades when packages or keys are absent.
-
-**Activation**: Set `voice.enabled = true` in `config/settings.json` or use the `onboard.py` Voice Setup step.
+- `voice.stt_backend` / `voice.tts_backend` = `"auto" | "offline" | "cloud" | "off"`. `resolve_backend()` decides: auto means offline if sherpa-onnx and the model are present, else cloud if its key is set, else off. `backend_problem()` returns the user-facing reason a choice can't run. `make_transcriber()` / `make_tts()` build the backend.
+- **Offline:** `OfflineTranscriber` (sherpa-onnx Moonshine v2) and `OfflineTTS` (Kitten / Kokoro). Models come from `models/voice.py`, a catalogue pinned to HF commits with an LFS-SHA-256-verified, resumable, parallel downloader, stored in `models/voice/<id>/`.
+- **Cloud:** `Transcriber` (AssemblyAI REST) and `TTSPlayer` (ElevenLabs SDK 2.x, REST fallback). Keys come from the keystore entries `assemblyai` / `elevenlabs` via `load_voice_config(api_keys)`, never from settings.json.
+- **Audio I/O:**
+  - `AudioRecorder.start()/stop()` (GUI) or `record_until_keypress()` (terminal) uses PyAudio, else sherpa-onnx `Alsa` on Linux. PyAudio has no Linux wheel; `portable/runtime.ONLY_ON` installs it for Windows only.
+  - `play_pcm()` uses PyAudio, else in-memory `winsound` (Windows) or `aplay`/`paplay` on stdin (Linux).
+  - Audio is never written to host disk. The only file is the cloud-STT WAV, which goes in the session dir and is deleted after upload.
+- **Desktop:** `ui/voice_ui.py` provides `VoiceController` (the 🎤 button / Ctrl+M, speak-replies) and `VoiceSettingsDialog`. Esc stops speech.
+- All optional deps (sherpa_onnx, pyaudio, elevenlabs, PIL) are guarded. Never make them required.
 
 ---
 
@@ -357,6 +357,10 @@ All optional deps (pyaudio, assemblyai, elevenlabs, PIL) are guarded with try/ex
 | [Onyx](https://github.com/onyx-dot-app/onyx) | `providers/onyx_provider.py` | RAG with 50+ connectors |
 | [llmfit](https://github.com/AlexsJones/llmfit) | `integrations/llmfit_advisor.py` | Hardware-aware model selection |
 | [clicky](https://github.com/farzaa/clicky) | `integrations/voice_tools.py` | Push-to-talk voice pipeline (Python port) |
+| [Windows-MCP](https://github.com/CursorTouch/Windows-MCP) | `mcp/defaults.py` | Default desktop control on Windows (UI Automation) |
+| [computer-use-linux](https://github.com/agent-sh/computer-use-linux) | `mcp/defaults.py` | Default desktop control on Linux (AT-SPI) |
+| [Monty](https://github.com/pydantic/monty) | `integrations/python_sandbox.py` | Sandboxed `run_python` |
+| [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) | `integrations/voice_tools.py` | Offline speech-to-text / text-to-speech |
 
 ---
 
@@ -412,7 +416,7 @@ USB_ROOT/
 5. **Optional imports** — Many integrations are optional. Always guard third-party imports with try/except; never make optional deps required without updating `requirements.txt`.
 6. **Provider additions** — New providers must extend `BaseProvider`, handle all three exception types, and be registered in `modes/api_mode.py`. Implement `_fetch_model_ids()` / `_fallback_models()` so `models()` discovers live IDs and `resolve_model()` can replace retired ones; hardcoded lists are only the offline fallback.
 7. **Tool additions** — Register via `register_tool()` in `agent/tools.py`; keep `execute_fn` side-effect-safe when `permission_mode == "safe"`.
-8. **Voice pipeline** — `integrations/voice_tools.py` is fully optional; all four deps (pyaudio, assemblyai, elevenlabs, Pillow) are guarded. Never make them required.
+8. **Voice pipeline** — `integrations/voice_tools.py` is fully optional; its deps (sherpa-onnx, pyaudio, elevenlabs, Pillow) are guarded. Never make them required. Voice models are data in `models/voice/`; `update_usb.py` syncs code in `models/` but never model data (`_is_model_data`), and the flasher keeps it on re-flash.
 9. **Onboarding** — `onboard.py` uses `rich` for the visual experience but has a complete plain-text fallback; it must run with only stdlib if rich is not yet installed.
 10. **USB self-hosting** — `flash_usb.py` and `setup_usb.py` install packages with `pip install --target` into the USB. `bootstrap.py` injects that directory via `sys.path.insert(0, ...)`. Never assume host site-packages are available; all imports that aren't stdlib should be guarded with try/except.
 11. **Bundled runtimes** — `portable/runtime.py` is the single source of truth for the Python and llama.cpp builds carried on the USB (pinned versions + SHA-256; `flash_usb.py`, `setup_usb.py` and `update_usb.py` all call it). Python comes from astral-sh/python-build-standalone, not the python.org embeddable zip. Bump `PYTHON_VERSION`/`PYTHON_RELEASE`/`LLAMA_BUILD` and their hashes together. Extraction must stay symlink-free (USB = exFAT/FAT32); packages are cross-installed for the bundled interpreter via `--platform`/`--python-version`, never the host's.
@@ -424,3 +428,16 @@ USB_ROOT/
 16. **MCP transport** — `mcp/client.py` speaks stdio and Streamable HTTP (MCP 2026-07-28): stateless, no `initialize`, identity in `_meta` (`io.modelcontextprotocol/clientInfo`), `MCP-Protocol-Version`/`Mcp-Method`/`Mcp-Name` headers, JSON or `text/event-stream` responses. It falls back to the legacy `initialize` handshake (2024-11-05) for older servers; a `"sse"` config entry is treated as Streamable HTTP. Bump `PROTOCOL_VERSION` in one place.
 17. **Hugging Face sign-in** — `models/hf_auth.py` (stdlib) does the OAuth device-code flow (RFC 8628) against a *public* app whose id is `settings.huggingface.oauth_client_id`, plus `check_access` (HEAD resolve URL: 302 ok, 401 sign in, 403 licence not accepted, 404 missing). Licences can only be accepted on huggingface.co, so the UI shows the model page as a QR code; never open a browser on the host. The token is RAM-only unless the user saves it to `providers.enc` (keystore entry `huggingface`, skipped by `load_providers`).
 18. **Cloud provider catalogue** — `providers/catalog.py` is the single list of cloud providers for the desktop **API Keys** window, `onboard.py` and the sidebar. To add an OpenAI-compatible provider, add a `CloudProvider` entry (base URL, key page, default model, `check` style); `modes/api_mode.py` serves it through `GenericOpenAIProvider`, so there's no new module or registry line. Keys added at runtime go into the launcher's `api_keys` dict, which is zeroed on exit, and reach the agent through `Agent.set_api_keys()`. That rebuilds the API router and turns a local session into hybrid, where provider `"local"` goes to llama-server. Credentials that aren't chat providers are listed in `api_mode.NON_CHAT_CREDENTIALS`.
+19. **Python sandbox** — `run_python` (`integrations/python_sandbox.py`) runs agent-written code in Monty (pydantic/monty), a Rust Python subset in a separate worker process. It has no host filesystem, network or subprocess access, and `/work` is mounted read-write from `<session dir>/sandbox`. Limits come from `settings.sandbox.*`; a timeout or crash resets the REPL session. It's registered only when `pydantic-monty` and its `monty` worker are found: `find_monty_binary` checks `$MONTY_BIN`, then `<site-packages>/bin` (where `pip --target` puts it), then PATH. It needs no permission prompt because the code can't touch the host. Keep `shell` for real system work.
+    **Sandbox switch** (desktop "Access" button, web `/api/sandbox`, REPL `/sandbox`) → `Agent.set_sandboxed()`:
+    - **On:** the model only sees and may run tools in `agent.tools.SANDBOX_SAFE_TOOLS`, an allow-list. New tools are host tools unless registered with `sandbox_safe=True`. `Agent._check_tool` refuses the rest before the permission policy.
+    - **Off:** `python_sandbox.set_host_access(True)` mounts `host_folders()` (Desktop/Documents/Downloads by default, never all of home) read-only at `/host/<name>`, listed in the `HOST_FOLDERS` input.
+    - The starting state comes from `sandbox.start_sandboxed`. Its Linux runtime wheel is `manylinux_2_28`, last in `PIP_PLATFORMS["linux"]`. `install_packages` keeps earlier packages' `bin/` scripts (`_keep_scripts`), because `pip --target --upgrade` replaces that folder on every install.
+20. **MCP wiring and desktop control**
+    - **Boot:** `launcher._init_mcp` calls `mcp.bridge.start_mcp`. It merges `mcp/defaults.py` with `settings.json` `mcp.servers` (a `{"enabled": false}` entry turns a server off), connects on a background thread, and registers each tool as `mcp__<server>__<tool>` minus the config's `exclude_tools`.
+    - **Stdio transport:** reads on a thread with a `timeout_ms` per call, drains stderr, and opens no console window. `tools/call` is never retried, because a repeat could click or run something twice. The `initialized` handshake message goes through `notify()`, not `send()`.
+    - **Permission checks:** `PermissionPolicy` scans command-like arguments of any tool (`_command_text`), not just `shell`.
+    - **"No trace" means no trace of carry-ai, not a restricted AI.** Windows-MCP is offered with every tool (`WINDOWS_EXCLUDE` is empty), under `PermissionPolicy`: `_DESTRUCTIVE_MODES` covers Registry set/delete, Process kill, and FileSystem delete/move plus write/copy onto an existing file. Traces are undone instead of tools being blocked. The `_WINDOWS_BOOT` code tags every toast with group `carry-ai` (`TOAST_GROUP`); `on_tool_call` records the app ids, and `cleanup.remove_toasts` removes only that group. The clipboard is wiped on eject. On Linux only `setup_window_targeting` (writes a GNOME Shell extension) is excluded.
+    - **Host settings:** if a tool changes a host setting, record it at boot and restore it at cleanup. `cleanup.TRACKED_GSETTINGS` with `snapshot_host_settings` / `restore_host_settings` does this for GNOME `toolkit-accessibility`, which `setup_accessibility` turns on.
+    - **Desktop server (Windows):** Windows-MCP 0.8.5 is pinned in `portable/runtime.WINDOWS_MCP_REQUIREMENTS` and installed into its own folder, `python-env/windows/servers/windows-mcp`. It must never go in carry-ai's site-packages: the MCP SDK's `mcp` package would shadow our `mcp/`. It runs with `python -I -S` plus `site.addsitedir`, with telemetry off.
+    - **Desktop server (Linux):** `computer-use-linux` is pinned with SHA-256 per architecture at `bin/desktop/linux-<arch>/`. It is gated on glibc ≥ 2.39 and staged through `runtime.ensure_executable` on noexec mounts (llama-server uses the same helper with `whole_dir=True`).

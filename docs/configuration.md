@@ -161,8 +161,15 @@ Place this file at `config/settings.json` on the USB drive (next to `carry-ai/`)
     "auto_connect": true,
     // Automatically connect to all configured MCP servers at boot.
 
-    "servers": {}
+    "servers": {},
     // MCP server definitions. See "MCP Server Configuration" below.
+    // "exclude_tools": [...] hides tools; {"enabled": false} turns a server
+    // (including the built-in "desktop" one) off.
+
+    "desktop_control": true
+    // Start the built-in desktop-control server ("desktop": Windows-MCP on
+    // Windows, computer-use-linux on Linux) when the flasher put it on the USB.
+    // Its tools are hidden in sandbox mode and go through the permission policy.
   },
 
   "plugins": {
@@ -172,6 +179,23 @@ Place this file at `config/settings.json` on the USB drive (next to `carry-ai/`)
     "enabled": []
     // Explicit list of plugin names to enable when auto_load is false.
     // Example: ["my-plugin", "another-plugin"]
+  },
+
+  "voice": {
+    // Push-to-talk (🎤 / Ctrl+M in the desktop app). Each direction:
+    // "auto" (offline model if downloaded, else cloud if its key is set),
+    // "offline" (sherpa-onnx on this PC), "cloud" (AssemblyAI / ElevenLabs), "off".
+    // Cloud keys are kept in providers.enc ("assemblyai", "elevenlabs"), not here.
+    "stt_backend": "auto",
+    "tts_backend": "auto",
+    "stt_model": "moonshine-tiny-en",   // or "moonshine-base-en"
+    "tts_model": "kitten-nano-en",      // or "kokoro-multi"
+    "tts_speaker": 0,                   // voice index (Kitten has 8: 0-7)
+    "tts_speed": 1.0,
+    "speak_replies": false,             // read agent replies aloud
+    "auto_send": true,                  // send the transcript without editing
+    "vision_enabled": false,            // attach a screenshot (terminal voice loop)
+    "max_recording_seconds": 60
   },
 
   "cowork": {
@@ -193,6 +217,25 @@ Place this file at `config/settings.json` on the USB drive (next to `carry-ai/`)
     // Enables "Sign in with Hugging Face" in the Model Manager: the user
     // approves a short code on their phone, no browser opens on this PC.
     // Empty = the button explains how to set it up; pasting a token works.
+  },
+
+  "sandbox": {
+    // run_python tool: Python in a Monty sandbox (pydantic-monty). No access to
+    // the host filesystem, network or processes; /work is a scratch folder in the
+    // session dir (wiped on eject). Only registered if pydantic-monty is installed.
+    "enabled": true,
+    "timeout_s": 10,        // per run; a timeout resets the sandbox's variables
+    "max_memory_mb": 256,
+
+    // Sandbox switch (chat window "Access" button, web UI Settings, /sandbox on|off):
+    //   🔒 Sandboxed  — the model only gets tools that can't touch this PC
+    //                   (run_python on /work, web_fetch/scrape, memory, system info);
+    //                   shell, file, screen, clipboard, plugin and MCP tools are hidden
+    //                   and refused.
+    //   🔓 Host access — every tool, under agent.permission_mode; run_python can also
+    //                   READ host_folders at /host/<name> (writes stay with write_file).
+    "start_sandboxed": false,   // which one a new session starts in
+    "host_folders": []          // [] = Desktop, Documents, Downloads; or your own paths
   },
 
   "experimental": {

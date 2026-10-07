@@ -66,6 +66,8 @@ pyperclip>=1.8.2             # Clipboard read/write/wipe
                              #   extra: curl_cffi + playwright/patchright)
                              # scrapling install  (Chromium for stealth; carry-ai points
                              #   PLAYWRIGHT_BROWSERS_PATH at USB bin/ms-playwright)
+# pydantic-monty>=1.1.0      # run_python sandbox (pydantic/monty); worker binary
+#                            #   lands in <site-packages>/bin with pip --target
 # llmfit                     # Hardware-aware model selection (AlexsJones/llmfit)
                              # Install: pip install llmfit  (PyPI ships the native
                              #   binary in platform wheels; no Rust toolchain needed)
@@ -77,14 +79,12 @@ pyperclip>=1.8.2             # Clipboard read/write/wipe
 # ---------------------------------------------------------------------------
 # Voice Mode (inspired by farzaa/clicky — push-to-talk + TTS)
 # ---------------------------------------------------------------------------
-# pyaudio>=0.2.14            # Microphone recording + TTS audio playback
-#                            # Linux: sudo apt install portaudio19-dev first
-#                            # macOS: brew install portaudio first
-#                            # Speech-to-text: AssemblyAI REST API via requests
-#                            # (no SDK needed). Key: assemblyai.com
-# elevenlabs>=2.0.0          # Text-to-speech (ElevenLabs; text_to_speech.stream, SDK 2.x)
-#                            # pip install elevenlabs
-#                            # Key: elevenlabs.io → free 10k chars/month
+# sherpa-onnx>=1.13.8        # Offline speech-to-text + text-to-speech (models via
+#                            #   python models/voice.py get <id>); on Linux also the mic
+# pyaudio>=0.2.14            # Mic + speaker on Windows (wheel bundles PortAudio; no
+#                            #   Linux wheel: Linux records via sherpa-onnx, plays via aplay)
+# elevenlabs>=2.0.0          # Optional cloud text-to-speech (SDK 2.x; REST fallback)
+#                            # Cloud speech-to-text: AssemblyAI REST via requests
 # Pillow>=10.0.0             # Screenshot capture fallback (PIL.ImageGrab)
 #                            # pip install Pillow
 
