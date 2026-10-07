@@ -215,6 +215,9 @@ def load_providers(decrypted_keys: dict) -> dict[str, BaseProvider]:
         Dict of provider_name -> provider_instance (only successfully loaded ones).
     """
     providers = {}
+    # Peripheral providers are opt-in (see config experimental.*); skip
+    # them even if a key happens to be present, unless explicitly enabled.
+    experimental = {"godmode", "onyx"}
 
     for name, keys in decrypted_keys.items():
         if name.startswith("_"):
@@ -222,6 +225,15 @@ def load_providers(decrypted_keys: dict) -> dict[str, BaseProvider]:
         if not isinstance(keys, dict):
             log.debug("Skipping non-dict key entry: %s", name)
             continue
+        if name in experimental:
+            try:
+                from config.settings import is_experimental_enabled
+            except ImportError:
+                is_experimental_enabled = lambda *_a, **_k: False  # noqa: E731
+            if not is_experimental_enabled(name):
+                log.info("Provider '%s' is experimental and disabled; skipping. "
+                         "Enable with experimental.%s in settings.json.", name, name)
+                continue
 
         provider = _instantiate_provider(name, keys)
         if provider is not None:

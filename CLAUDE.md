@@ -59,7 +59,7 @@ carry-ai/
 │   └── desktop.py           # Native desktop chat app — drives the same Agent as the web UI (customtkinter/tkinter), run by launcher.py
 
 ├── mcp/
-│   ├── client.py            # JSON-RPC transport (stdio, HTTP, SSE)
+│   ├── client.py            # JSON-RPC transport: stdio + Streamable HTTP (MCP 2026-07-28, legacy-handshake fallback)
 │   ├── config.py            # MCP server configuration loader
 │   └── registry.py          # Thread-safe MCP tool registry
 
@@ -418,3 +418,5 @@ USB_ROOT/
 12. **"No trace" scope** — carry-ai can only remove what it creates in user space (session dir, browser profile, clipboard, its recent-file entries). OS execution/USB records (Prefetch, Amcache, USBSTOR, journald…) need admin and are out of scope; don't claim otherwise in docs.
 13. **Cleanup must survive eject** — anything `cleanup/cleanup.py` or the eject path needs must be imported at boot; never add lazy imports there. Only kill processes carry-ai started (descendants / binaries on the USB).
 14. **Web UI access** — every request needs the loopback Host header and the per-session token cookie (`ui/app.py`); new routes get this automatically via `before_request`.
+15. **Experimental features** — G0DM0D3, Onyx, Google Workspace and Cowork are off by default behind `settings.experimental.*`. Gate any peripheral feature (extra service, host install, or shared/persistent state that doesn't fit a disposable USB session) the same way: read it with `config.settings.is_experimental_enabled("<name>")` and skip registration when false. Gate points today: `modes/api_mode.py` `load_providers` (godmode/onyx), `agent/tools.py` `_register_integrations` (google_workspace), `ui/app.py` (cowork route).
+16. **MCP transport** — `mcp/client.py` speaks stdio and Streamable HTTP (MCP 2026-07-28): stateless, no `initialize`, identity in `_meta` (`io.modelcontextprotocol/clientInfo`), `MCP-Protocol-Version`/`Mcp-Method`/`Mcp-Name` headers, JSON or `text/event-stream` responses. It falls back to the legacy `initialize` handshake (2024-11-05) for older servers; a `"sse"` config entry is treated as Streamable HTTP. Bump `PROTOCOL_VERSION` in one place.

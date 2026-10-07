@@ -79,6 +79,17 @@ DEFAULTS = {
         "session_ttl_minutes": 60,
     },
 
+    # Peripheral features, off by default. They don't fit the disposable,
+    # offline-first USB session (extra services, host installs, or shared
+    # state) and are opt-in. Enable in settings.json, e.g.
+    #   {"experimental": {"onyx": true}}
+    "experimental": {
+        "godmode": False,           # providers/godmode_provider.py (model racing)
+        "onyx": False,              # providers/onyx_provider.py (RAG search)
+        "google_workspace": False,  # integrations/gworkspace_tools.py (needs gws CLI)
+        "cowork": False,            # cowork/ (team session sharing)
+    },
+
     "cleanup": {
         "wipe_clipboard": True,
         "scrub_recent_files": True,
@@ -308,3 +319,17 @@ def get_default_settings() -> dict:
 def load_settings(usb_root: str = None, cli_overrides: dict = None) -> Settings:
     """Convenience wrapper for Settings.load()."""
     return Settings.load(usb_root=usb_root, cli_overrides=cli_overrides)
+
+
+def is_experimental_enabled(feature: str, usb_root: str = None) -> bool:
+    """True if a peripheral feature is opted in via ``experimental.<feature>``.
+
+    Safe to call from anywhere (returns False on any load error) so gate
+    points stay one-liners. See the ``experimental`` block in DEFAULTS.
+    """
+    try:
+        exp = load_settings(usb_root=usb_root).to_dict().get("experimental", {})
+        return bool(exp.get(feature, False))
+    except Exception as e:
+        logger.debug("experimental flag check failed for %s: %s", feature, e)
+        return False

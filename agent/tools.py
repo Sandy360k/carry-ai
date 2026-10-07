@@ -668,10 +668,16 @@ def _register_integrations() -> None:
     except Exception as e:
         log.debug("Scrapling integration error: %s", e)
 
-    # Google Workspace CLI: adds gdrive_*, gmail_*, gsheets_*, gcalendar_* tools
+    # Google Workspace CLI: adds gdrive_*, gmail_*, gsheets_*, gcalendar_*
+    # tools. Opt-in — it needs a host-installed `gws` CLI, which doesn't fit
+    # the no-install USB model (see config experimental.google_workspace).
     try:
-        from integrations.gworkspace_tools import register_gworkspace_tools
-        register_gworkspace_tools()
+        from config.settings import is_experimental_enabled
+        if is_experimental_enabled("google_workspace"):
+            from integrations.gworkspace_tools import register_gworkspace_tools
+            register_gworkspace_tools()
+        else:
+            log.debug("Google Workspace integration disabled (experimental).")
     except ImportError:
         log.debug("Google Workspace integration not loaded (module not found)")
     except Exception as e:

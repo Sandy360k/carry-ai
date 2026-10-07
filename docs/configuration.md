@@ -181,6 +181,15 @@ Place this file at `config/settings.json` on the USB drive (next to `carry-ai/`)
     // How long a shared session URL stays active (minutes).
   },
 
+  "experimental": {
+    // Peripheral features, off by default. They don't fit the disposable,
+    // offline-first USB session, so they're opt-in.
+    "godmode": false,           // G0DM0D3 multi-model racing provider
+    "onyx": false,              // Onyx RAG provider
+    "google_workspace": false,  // Drive/Gmail/Sheets tools (needs the gws CLI)
+    "cowork": false             // team session-sharing API
+  },
+
   "cleanup": {
     "wipe_clipboard": true,
     // Clear the system clipboard on USB eject.
@@ -248,17 +257,23 @@ Launches a local process and communicates via stdin/stdout JSON-RPC. Use this fo
 
 `$VAR` references in the `env` block are expanded from the host environment at connect time.
 
-### HTTP / SSE
+### Streamable HTTP
 
-Connects to an already-running MCP server over HTTP. Use `"transport": "sse"` for servers that push events (most HTTP MCP servers), or `"transport": "http"` for pure request-response.
+Connects to an already-running MCP server over HTTP (MCP 2026-07-28). Use
+`"transport": "streamable-http"` (or `"http"`); a legacy `"sse"` entry is
+accepted and treated the same way. The client connects statelessly first
+(no `initialize` handshake; `MCP-Protocol-Version` / `Mcp-Method` /
+`Mcp-Name` headers and client identity in `_meta`), and falls back to the
+old `initialize` handshake for 2025-era servers. The response may be
+`application/json` or `text/event-stream` — both are handled.
 
 ```json
 {
   "mcp": {
     "servers": {
       "web-search": {
-        "transport": "sse",
-        "url": "http://localhost:3001/sse"
+        "transport": "streamable-http",
+        "url": "http://localhost:3001/mcp"
       },
       "custom-api": {
         "transport": "http",

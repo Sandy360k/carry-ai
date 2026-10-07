@@ -120,12 +120,12 @@ Mode is auto-detected from what's available, or forced with `--mode`.
 
 - **Portable** — runs from USB, zero permanent install on the host machine
 - **Offline-capable** — local GGUF inference via llama.cpp, 12 RAM tiers auto-selected
-- **7 cloud providers** — Anthropic, OpenAI, Google, Groq, OpenRouter, G0DM0D3, Onyx
+- **5 cloud providers** — Anthropic, OpenAI, Google, Groq, OpenRouter (plus G0DM0D3 and Onyx behind the experimental flag)
 - **Automatic failover** — health-tracked provider chain with exponential backoff
 - **Voice mode** — push-to-talk → AssemblyAI transcription → Claude vision → ElevenLabs TTS
-- **30+ agent tools** — shell, files, web scraping, screenshots, clipboard, Google Workspace
+- **30+ agent tools** — shell, files, web scraping, screenshots, clipboard (Google Workspace behind the experimental flag)
 - **Persistent memory** — SQLite + FTS5, survives sessions, dedup + relevance decay
-- **MCP support** — connect any MCP server via stdio, HTTP, or SSE
+- **MCP support** — connect any MCP server via stdio or Streamable HTTP (MCP 2026-07-28; legacy HTTP+SSE still works)
 - **Plugin system** — manifest-based tools, hooks, and lifecycle scripts
 - **Encrypted keys** — Fernet + PBKDF2 (600k iterations), decrypted in RAM only
 - **Automatic cleanup** — 6-step wipe on exit or USB eject (processes, RAM session, browser profile, clipboard, recent files)
@@ -226,8 +226,10 @@ Seven providers with automatic failover and per-session health tracking (success
 | **Google** | Gemini 3.8 Flash, 3.5 Flash-Lite, 3.1 Pro | API key or OAuth |
 | **Groq** | gpt-oss 20B / 120B, Qwen3.8 27B (vision) | API key |
 | **OpenRouter** | 450+ models incl. free ones (`openrouter/free`) | API key |
-| **G0DM0D3** | ULTRAPLINIAN racing, CONSORTIUM synthesis, AutoTune | API key |
-| **Onyx** | RAG-enhanced (50+ data connectors) | API key + Onyx instance |
+| **G0DM0D3** ⚑ | ULTRAPLINIAN racing, CONSORTIUM synthesis, AutoTune | API key |
+| **Onyx** ⚑ | RAG-enhanced (50+ data connectors) | API key + Onyx instance |
+
+⚑ Experimental — off by default (needs an extra self-hosted service). Enable with `{"experimental": {"godmode": true}}` / `{"onyx": true}` in `config/settings.json`.
 
 Manage keys:
 ```bash
@@ -241,14 +243,14 @@ Keys are encrypted with Fernet (AES-128-CBC + HMAC-SHA256) using PBKDF2 (600,000
 
 See [`docs/providers.md`](docs/providers.md) for per-provider setup details.
 
-### G0DM0D3 — Multi-Model Racing
+### G0DM0D3 — Multi-Model Racing (experimental)
 
 Via [G0DM0D3](https://github.com/elder-plinius/G0DM0D3):
 - **ULTRAPLINIAN** — race 10–51 models in parallel, score and pick the best response
 - **CONSORTIUM** — collect all responses, synthesize a ground-truth answer
 - **AutoTune** — auto-detect query context (code / creative / analytical) and optimize sampling
 
-### Onyx — RAG Integration
+### Onyx — RAG Integration (experimental)
 
 Via [Onyx](https://github.com/onyx-dot-app/onyx):
 - Answers grounded in your organization's data (Google Drive, Slack, Confluence, Notion, GitHub, etc.)
@@ -332,7 +334,9 @@ Via [Scrapling](https://github.com/D4Vinci/Scrapling):
 - **Three tiers** — `Fetcher` (HTTP) → `StealthyFetcher` (headless + CF bypass) → `DynamicFetcher` (Playwright)
 - Falls back to `requests.get()` if not installed
 
-### Google Workspace
+### Google Workspace (experimental)
+
+> Off by default — needs the `gws` CLI installed on the host, which breaks the no-install model. Enable with `{"experimental": {"google_workspace": true}}` in `config/settings.json`.
 
 Via [GWS CLI](https://github.com/googleworkspace/cli): Drive, Gmail, Sheets, Calendar — auth once with `gws auth login`.
 
@@ -406,15 +410,15 @@ Connect external MCP servers for additional tools:
         "env": { "GITHUB_TOKEN": "$GITHUB_TOKEN" }
       },
       "web-search": {
-        "transport": "sse",
-        "url": "http://localhost:3001/sse"
+        "transport": "streamable-http",
+        "url": "http://localhost:3001/mcp"
       }
     }
   }
 }
 ```
 
-- **Transports** — stdio (subprocess), HTTP, SSE
+- **Transports** — stdio (subprocess) and Streamable HTTP (MCP 2026-07-28: stateless, no handshake, `MCP-Protocol-Version`/`Mcp-Method`/`Mcp-Name` headers). A `"transport": "sse"` entry is accepted but treated as Streamable HTTP, and the client falls back to the legacy `initialize` handshake for 2025-era servers.
 - **Auto-discovery** — tools registered as `mcp__{server}__{tool}`
 - **Thread-safe registry** — concurrent access from agent and UI threads
 - **Env var resolution** — `$VAR` references expanded at connect time
@@ -440,7 +444,9 @@ Extend carry-ai with manifest-based plugins:
 
 ---
 
-## Cowork Features
+## Cowork Features (experimental)
+
+> Off by default — team session sharing doesn't fit a disposable, anonymous USB session. Enable with `{"experimental": {"cowork": true}}` in `config/settings.json`.
 
 **Session Sharing**
 - JSON export (sanitized — API keys stripped, paths relativized)
