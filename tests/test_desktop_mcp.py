@@ -49,13 +49,51 @@ def test_windows_server_is_isolated_and_quiet(tmp_path):
     (r.server_dir(tmp_path, "windows", "windows-mcp") / "windows_mcp").mkdir(parents=True)
     cfg = d.windows_server(tmp_path)
     assert cfg.args[:2] == ["-I", "-S"]              # none of carry-ai's packages
-    assert "serve" in cfg.args and "--exclude-tools" in cfg.args
-    excluded = cfg.args[cfg.args.index("--exclude-tools") + 1].split(",")
-    # system tools stay available; only duplicates and trace-leaving ones go
-    assert not {"PowerShell", "Registry", "Process"} & set(excluded)
-    assert "Notification" in excluded
-    assert cfg.exclude_tools == excluded             # also filtered on our side
+    assert cfg.args[-3:] == ["serve", "--transport", "stdio"]
+    assert "--exclude-tools" not in cfg.args and cfg.exclude_tools == []   # every tool
     assert cfg.env["ANONYMIZED_TELEMETRY"] == "false" and cfg.env["POSTHOG_API_KEY"] == ""
+
+
+def test_windows_toasts_are_tagged_for_cleanup(tmp_path):
+    """The boot code puts every toast in group carry-ai before it is shown."""
+    import subprocess
+    import sys
+    srv = tmp_path / "srv"
+    (srv / "windows_mcp" / "notifications").mkdir(parents=True)
+    (srv / "windows_mcp" / "__init__.py").write_text("")
+    (srv / "windows_mcp" / "notifications" / "__init__.py").write_text("")
+    (srv / "windows_mcp" / "notifications" / "service.py").write_text(
+        "class PowerShellExecutor:\n"
+        "    @staticmethod\n"
+        "    def execute_command(script, shell=None):\n"
+        "        print(script)\n"
+        "        return '', 0\n"
+        "def send(app):\n"
+        "    return PowerShellExecutor.execute_command('$toast = 1\\n$notifier.Show($toast)')\n")
+    (srv / "windows_mcp" / "__main__.py").write_text(
+        "import windows_mcp.notifications.service as s\n"
+        "s.PowerShellExecutor.execute_command('$toast = 1\\n$notifier.Show($toast)')\n")
+    out = subprocess.run([sys.executable, "-I", "-S", "-c", d._WINDOWS_BOOT, str(srv), "serve"],
+                         capture_output=True, text=True).stdout.splitlines()
+    assert out[0] == "$toast = 1"
+    assert out[1] == f"$toast.Group = '{d.TOAST_GROUP}'"
+    assert out[2].startswith("$toast.Tag = ") and out[3] == "$notifier.Show($toast)"
+
+
+def test_toast_app_ids_are_recorded_and_cleaned(monkeypatch):
+    from cleanup import cleanup as c
+    monkeypatch.setattr(c, "_TOAST_APPS", set())
+    d.on_tool_call("desktop", "Click", {"app_id": "x"})            # other tools: ignored
+    d.on_tool_call("desktop", "Notification", {"app_id": "O'Brien.App"})
+    assert c._TOAST_APPS == {"O'Brien.App"}
+    ran = []
+    monkeypatch.setattr(c.sys, "platform", "win32")
+    monkeypatch.setattr(c.subprocess, "run", lambda cmd, **kw: ran.append(cmd))
+    assert c.remove_toasts() == 1
+    script = ran[0][-1]
+    assert "History.RemoveGroup('carry-ai', 'O''Brien.App')" in script   # only our group
+    assert ran[0][0] == "powershell" and "-NoProfile" in ran[0]
+    assert c.TOAST_GROUP == d.TOAST_GROUP
 
 
 def test_desktop_control_switch(monkeypatch):
@@ -182,3 +220,16 @@ def test_changed_host_settings_are_restored(monkeypatch):
     assert c.restore_host_settings() == 0                                      # unchanged: no write
     assert sum(1 for a in calls if a[0] == "set") == 1
     assert "settings_restored" in c.full_cleanup(session_dir=None, dry_run=True)
+
+
+def test_filesystem_tool_follows_write_file_rules(tmp_path):
+    from agent.agent import PermissionPolicy
+    existing = tmp_path / "a.txt"
+    existing.write_text("x")
+    safe = PermissionPolicy(mode="safe")
+    fs = "mcp__desktop__filesystem"
+    assert safe.check(fs, {"mode": "read", "path": str(existing)}) == (True, "")
+    assert safe.check(fs, {"mode": "write", "path": str(tmp_path / "new.txt")}) == (True, "")
+    assert safe.check(fs, {"mode": "write", "path": str(existing)})[0] is False
+    assert safe.check(fs, {"mode": "copy", "path": "x", "destination": str(existing)})[0] is False
+    assert safe.check(fs, {"mode": "delete", "path": str(tmp_path / "gone")})[0] is False

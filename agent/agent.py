@@ -242,6 +242,8 @@ def _command_text(tool_name: str, args: dict) -> str:
 _DESTRUCTIVE_MODES = {
     "registry": {"set": "registry write", "delete": "registry delete"},
     "process": {"kill": "killing a process"},
+    "filesystem": {"delete": "deleting", "move": "moving",
+                   "write": "overwriting", "copy": "overwriting"},
 }
 
 
@@ -251,9 +253,16 @@ def _destructive_action(tool_name: str, args: dict) -> str:
         return ""
     base = tool_name.lower().rsplit("__", 1)[-1]
     modes = _DESTRUCTIVE_MODES.get(base)
-    action = modes.get(str(args.get("mode", "")).lower()) if modes else None
+    mode = str(args.get("mode", "")).lower()
+    action = modes.get(mode) if modes else None
     if not action:
         return ""
+    if base == "filesystem" and mode in ("write", "copy"):
+        # Like write_file: creating a new file is fine, replacing one asks
+        target = args.get("destination") if mode == "copy" else args.get("path")
+        if not target or not Path(str(target)).exists():
+            return ""
+        return f"{action}: {target}"
     target = args.get("path") or args.get("name") or args.get("pid") or ""
     return f"{action}: {target}" if target else action
 

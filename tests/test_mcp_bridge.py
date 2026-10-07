@@ -124,3 +124,16 @@ def test_dangerous_commands_are_checked_on_any_tool():
     assert ask.check("mcp__linux__run", {"script": "rm -rf ~"})[0] is False and asked
     # run_python code never runs on the host
     assert safe.check("run_python", {"code": "s = 'rm -rf /'"}) == (True, "")
+
+
+def test_call_hook_sees_every_call(server_cfg):
+    seen = []
+    reg = {}
+    bridge = McpBridge([server_cfg], lambda **kw: reg.__setitem__(kw["name"], kw),
+                       on_call=lambda srv, tool, args: seen.append((srv, tool, args)))
+    bridge.start(background=False)
+    try:
+        reg["mcp__fake__echo_tool"]["execute_fn"](text="x")
+        assert seen == [("fake", "Echo-Tool", {"text": "x"})]
+    finally:
+        bridge.shutdown()

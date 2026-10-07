@@ -203,6 +203,43 @@ def _gsettings(*args: str) -> str | None:
         return None
 
 
+# Toasts shown by desktop control (Windows-MCP's Notification tool) carry
+# Group "carry-ai" (mcp/defaults.py TOAST_GROUP); their app ids are recorded
+# here and that group is removed from the Action Center on cleanup.
+TOAST_GROUP = "carry-ai"
+_TOAST_APPS: set[str] = set()
+
+
+def record_toast_app(app_id: str) -> None:
+    if app_id:
+        _TOAST_APPS.add(app_id)
+
+
+def remove_toasts(dry_run: bool = False) -> int:
+    """Remove carry-ai's toasts from the Windows Action Center."""
+    if sys.platform != "win32" or not _TOAST_APPS:
+        return 0
+    removed = 0
+    flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    for app_id in sorted(_TOAST_APPS):
+        script = (
+            "[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, "
+            "ContentType = WindowsRuntime] | Out-Null; "
+            "[Windows.UI.Notifications.ToastNotificationManager]::History.RemoveGroup("
+            f"'{TOAST_GROUP}', '{app_id.replace(chr(39), chr(39) * 2)}')")
+        log.info("Removing carry-ai toasts for %s", app_id)
+        if dry_run:
+            continue
+        try:
+            # Windows PowerShell 5.1: the WinRT toast API isn't in pwsh 7
+            subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
+                           capture_output=True, timeout=15, creationflags=flags)
+            removed += 1
+        except (OSError, subprocess.SubprocessError) as e:
+            log.warning("Could not remove toasts for %s: %s", app_id, e)
+    return removed
+
+
 def snapshot_host_settings() -> int:
     """Record tracked host settings at boot. Returns how many were recorded."""
     _HOST_SETTINGS.clear()
@@ -600,6 +637,7 @@ def full_cleanup(session_dir: str | Path | None = None,
     results = {
         "processes_killed": 0,
         "settings_restored": 0,
+        "toasts_removed": 0,
         "session_wiped": False,
         "clipboard_cleared": False,
         "recent_scrubbed": False,
@@ -618,11 +656,16 @@ def full_cleanup(session_dir: str | Path | None = None,
     if not dry_run and results["processes_killed"] > 0:
         time.sleep(1)
 
-    # Step 1b: Restore host settings (after the tools that changed them stopped)
+    # Step 1b: Restore host settings and remove our toasts (after the tools
+    # that made them have stopped)
     try:
         results["settings_restored"] = restore_host_settings(dry_run=dry_run)
     except Exception as e:
         log.error("Host settings restore failed: %s", e)
+    try:
+        results["toasts_removed"] = remove_toasts(dry_run=dry_run)
+    except Exception as e:
+        log.error("Toast removal failed: %s", e)
 
     # Step 2: Wipe session directory
     log.info("[2/6] Wiping session directory...")

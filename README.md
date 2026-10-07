@@ -406,8 +406,10 @@ With the flasher's **desktop control** option, carry-ai starts a desktop-control
 
 Its tools appear as `mcp__desktop__*`: snapshot / app state, click, type, keys, scroll, drag, windows, screenshot.
 
-- **What's available:** the full toolset, including Windows-MCP's PowerShell, Registry and Process. Registry writes/deletes and process kills ask first in `ask` mode, are blocked in `safe` mode and allowed freely in `yolo`; PowerShell commands get the same dangerous-command check as carry-ai's own shell.
-- **Left out:** only duplicates of carry-ai's own tools (FileSystem, Scrape, Clipboard), and what would leave carry-ai on record after eject — Windows toasts (they stay in the Action Center) and the GNOME Shell extension installer.
+- **What's available:** every Windows-MCP tool — including PowerShell, Registry, Process, FileSystem, Scrape, Clipboard and Notification — under the permission mode:
+  - Registry writes/deletes, process kills, file deletes/moves and overwriting an existing file ask first in `ask` mode, are blocked in `safe` mode and run freely in `yolo`.
+  - PowerShell commands get the same dangerous-command check as carry-ai's own shell.
+- **No trace left behind:** toasts the AI shows are tagged and removed from the Action Center on cleanup (only carry-ai's — your own notifications are untouched), and the clipboard is wiped on eject. On Linux only the GNOME Shell extension installer is left out (it writes into the home folder).
 - **Accessibility setting:** on Linux the AI may switch GNOME accessibility on so apps expose their controls. carry-ai records the setting at boot and puts it back on cleanup.
 - **Sandbox switch:** like every MCP tool, desktop control is hidden when the chat's sandbox switch is on.
 - **Turning it off:** set `"mcp": {"desktop_control": false}`.

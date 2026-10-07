@@ -31,12 +31,14 @@ log = logging.getLogger("carry-ai.mcp.bridge")
 
 
 class McpBridge:
-    def __init__(self, configs: list[McpServerConfig], register_tool, unregister_tool=None):
+    def __init__(self, configs: list[McpServerConfig], register_tool, unregister_tool=None,
+                 on_call=None):
         self.registry = McpToolRegistry()
         self.manager = McpManager(self.registry)
         self._configs = configs
         self._register_tool = register_tool
         self._unregister_tool = unregister_tool
+        self._on_call = on_call          # fn(server, tool, args) before each call
         self._agent_tools: list[str] = []
         self.ready = threading.Event()
         self.results: dict[str, bool] = {}
@@ -75,7 +77,13 @@ class McpBridge:
             if schema.get("type") != "object":
                 schema = {"type": "object", "properties": {}}
 
-            def call(_full=tool.full_name, **kwargs):
+            def call(_full=tool.full_name, _srv=tool.server_name, _name=tool.tool_name,
+                     **kwargs):
+                if self._on_call:
+                    try:
+                        self._on_call(_srv, _name, kwargs)
+                    except Exception as e:
+                        log.debug("MCP call hook failed: %s", e)
                 try:
                     return self.registry.dispatch(_full, kwargs)
                 except RuntimeError as e:
@@ -120,4 +128,9 @@ def start_mcp(settings_path: Path | None = None, background: bool = True) -> Mcp
         TOOL_REGISTRY.pop(name, None)
 
     configs = load_server_configs(settings_path)
-    return McpBridge(configs, register_tool, unregister).start(background=background)
+    try:
+        from mcp.defaults import on_tool_call
+    except ImportError:
+        on_tool_call = None
+    return McpBridge(configs, register_tool, unregister,
+                     on_call=on_tool_call).start(background=background)
