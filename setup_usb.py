@@ -464,6 +464,8 @@ def main() -> None:
     install_tools     = _confirm("  Agent tools (pyautogui, pyperclip)?", default=True)
     install_voice     = _confirm("  Voice (offline speech with sherpa-onnx + ~86 MB of models)?", default=False)
     setup_llama       = _confirm("  llama.cpp for local models (Vulkan GPU + CPU, ~140 MB/OS)?", default=True)
+    setup_desktop     = _confirm("  Desktop control — lets the AI see and operate apps "
+                                 "(Windows ~220 MB, Linux ~18 MB)?", default=True)
 
     packages_to_install = list(CORE_PACKAGES)
     if install_providers:
@@ -513,6 +515,15 @@ def main() -> None:
                 console.print(f"  [green]✓ llama.cpp (Vulkan + CPU) bundled for {os_name}.[/green]")
             except (OSError, ValueError) as e:
                 console.print(f"  [yellow]⚠ llama.cpp download failed: {e}[/yellow]")
+
+        if setup_desktop:
+            try:
+                runtime.install_desktop_control(usb_root, os_name, cache,
+                                                progress=_progress(f"desktop-{os_name}"))
+                print()
+                console.print(f"  [green]✓ Desktop control bundled for {os_name}.[/green]")
+            except (OSError, ValueError, RuntimeError) as e:
+                console.print(f"  [yellow]⚠ Desktop control not installed: {e}[/yellow]")
 
         size = _dir_size_mb(usb_root / "python-env" / os_name)
         console.print(f"  {os_name.capitalize()} env size: {size:.0f} MB")

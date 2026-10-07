@@ -64,8 +64,11 @@ DEFAULTS = {
     },
 
     "mcp": {
-        "servers": {},                   # name -> {command, args, env}
+        "servers": {},                   # name -> {command, args, env, exclude_tools}
         "auto_connect": True,
+        # Built-in "desktop" server (mcp/defaults.py): Windows-MCP on Windows,
+        # computer-use-linux on Linux, when the flasher put it on the USB.
+        "desktop_control": True,
     },
 
     "plugins": {

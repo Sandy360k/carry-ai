@@ -65,7 +65,12 @@ class McpBridge:
 
     def _publish(self) -> None:
         """Copy the MCP registry into the agent's tool registry."""
+        excluded = {(c.name, t.lower()) for c in self._configs for t in c.exclude_tools}
         for tool in self.registry.list_tools():
+            if (tool.server_name, tool.tool_name.lower()) in excluded:
+                log.info("MCP '%s': not offering tool %s (excluded).",
+                         tool.server_name, tool.tool_name)
+                continue
             schema = tool.input_schema or {"type": "object", "properties": {}}
             if schema.get("type") != "object":
                 schema = {"type": "object", "properties": {}}

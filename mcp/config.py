@@ -15,7 +15,8 @@ Config format per server:
         "url": "http://...",           # sse/http only
         "headers": {},                 # sse/http headers
         "timeout_ms": 30000,           # call timeout
-        "auto_connect": true           # connect on boot
+        "auto_connect": true,          # connect on boot
+        "exclude_tools": ["Registry"]  # never offered to the agent
     }
 """
 
@@ -45,6 +46,9 @@ class McpServerConfig:
     timeout_ms: int = 30000
     auto_connect: bool = True
     enabled: bool = True
+    # Tool names (as the server reports them) never offered to the agent,
+    # e.g. ones that make lasting changes to the host
+    exclude_tools: list = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return {
@@ -58,6 +62,7 @@ class McpServerConfig:
             "timeout_ms": self.timeout_ms,
             "auto_connect": self.auto_connect,
             "enabled": self.enabled,
+            "exclude_tools": list(self.exclude_tools),
         }
 
     def validate(self) -> list:
@@ -95,6 +100,7 @@ class McpServerConfig:
             timeout_ms=self.timeout_ms,
             auto_connect=self.auto_connect,
             enabled=self.enabled,
+            exclude_tools=list(self.exclude_tools),
         )
 
 
@@ -136,6 +142,7 @@ class McpConfigLoader:
                     timeout_ms=cfg.get("timeout_ms", 30000),
                     auto_connect=cfg.get("auto_connect", True),
                     enabled=cfg.get("enabled", True),
+                    exclude_tools=cfg.get("exclude_tools", []),
                 )
                 errors = server.validate()
                 if errors:

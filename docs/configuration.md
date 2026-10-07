@@ -161,8 +161,15 @@ Place this file at `config/settings.json` on the USB drive (next to `carry-ai/`)
     "auto_connect": true,
     // Automatically connect to all configured MCP servers at boot.
 
-    "servers": {}
+    "servers": {},
     // MCP server definitions. See "MCP Server Configuration" below.
+    // "exclude_tools": [...] hides tools; {"enabled": false} turns a server
+    // (including the built-in "desktop" one) off.
+
+    "desktop_control": true
+    // Start the built-in desktop-control server ("desktop": Windows-MCP on
+    // Windows, computer-use-linux on Linux) when the flasher put it on the USB.
+    // Its tools are hidden in sandbox mode and go through the permission policy.
   },
 
   "plugins": {

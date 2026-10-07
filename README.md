@@ -395,6 +395,23 @@ Embedded SPA (vanilla HTML/CSS/JS) — no build step, no node_modules. Inspired 
 
 ## MCP Integration
 
+### Desktop control (built in)
+
+With the flasher's **desktop control** option, carry-ai starts a desktop-control MCP server, so the AI can see and operate apps on the PC. It reads the accessibility tree (buttons, fields and menus by name), not just screenshots, so it also works with local models that have no vision.
+
+| | Server | Notes |
+|---|---|---|
+| **Windows** | [Windows-MCP](https://github.com/CursorTouch/Windows-MCP) 0.8.5 (UI Automation) | ~220 MB. Runs on the USB's Python from its own folder. Telemetry off; no user-id file. |
+| **Linux** | [computer-use-linux](https://github.com/agent-sh/computer-use-linux) 0.7.12 (AT-SPI, X11 + Wayland) | 9 MB binary per architecture, pinned SHA-256. Needs glibc 2.39+ (Ubuntu 24.04, Fedora 40 or newer); on older systems it simply isn't started. |
+
+Its tools appear as `mcp__desktop__*`: snapshot / app state, click, type, keys, scroll, drag, windows, screenshot.
+
+- **Excluded tools:** tools that duplicate carry-ai's own (shell, files, clipboard, web) or leave lasting changes on the PC are not offered — Windows-MCP's PowerShell, Registry, FileSystem, Process, Scrape, Clipboard and Notification, and Linux's GNOME setup tools.
+- **Sandbox switch:** like every MCP tool, desktop control is hidden when the chat's sandbox switch is on.
+- **Turning it off:** set `"mcp": {"desktop_control": false}`.
+
+### Your own servers
+
 Connect external MCP servers for additional tools:
 
 ```json
@@ -417,7 +434,7 @@ Connect external MCP servers for additional tools:
 ```
 
 - **Transports** — stdio (subprocess) and Streamable HTTP (MCP 2026-07-28: stateless, no handshake, `MCP-Protocol-Version`/`Mcp-Method`/`Mcp-Name` headers). A `"transport": "sse"` entry is accepted but treated as Streamable HTTP, and the client falls back to the legacy `initialize` handshake for 2025-era servers.
-- **Auto-discovery** — tools registered as `mcp__{server}__{tool}`
+- **Auto-discovery** — servers connect in the background at boot; tools registered as `mcp__{server}__{tool}` (drop any with `"exclude_tools": [...]`, turn a server off with `"enabled": false`)
 - **Thread-safe registry** — concurrent access from agent and UI threads
 - **Env var resolution** — `$VAR` references expanded at connect time
 

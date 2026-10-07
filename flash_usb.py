@@ -487,6 +487,24 @@ def setup_llama_server(usb_root: Path, os_name: str) -> bool:
     return True
 
 
+def setup_desktop_control(usb_root: Path, os_name: str) -> bool:
+    """Put the default desktop-control MCP server for *os_name* on the USB."""
+    what = ("Windows-MCP (UI Automation)" if os_name == "windows"
+            else f"computer-use-linux {runtime.DESKTOP_LINUX_VERSION} (AT-SPI)")
+    console.print(f"  Desktop control: {what} ...")
+    try:
+        written = runtime.install_desktop_control(usb_root, os_name, _runtime_cache(usb_root),
+                                                  progress=_progress(f"desktop-{os_name}"))
+    except (OSError, ValueError, RuntimeError) as e:
+        print()
+        console.print(f"  [yellow]⚠ Desktop control not installed:[/yellow] {e}")
+        return False
+    print()
+    for p in written:
+        console.print(f"  [green]✓[/green] {p.relative_to(usb_root)}")
+    return True
+
+
 # ---------------------------------------------------------------------------
 # LocalAI binary download
 # ---------------------------------------------------------------------------
@@ -708,6 +726,9 @@ def main() -> None:
     want_win   = _confirm("  Bundle Windows runtime? (Python + packages, ~250 MB — nothing to install on the PC)", default=True)
     want_linux = _confirm("  Bundle Linux runtime? (Python + packages, ~300 MB — nothing to install on the PC)", default=True)
     want_llama = _confirm("  Bundle llama.cpp for local models? (Vulkan GPU + CPU, ~140 MB per OS)", default=True)
+    want_desktop = _confirm(
+        "  Bundle desktop control? (lets the AI see and operate apps — Windows ~220 MB, "
+        "Linux ~18 MB; Linux needs Ubuntu 24.04+ or similar)", default=True)
     want_prov  = _confirm("  Include LLM provider SDKs? (anthropic, openai, google-auth)", default=True)
     want_tools = _confirm("  Include agent tools? (pyautogui, pyperclip)", default=True)
     want_voice    = _confirm("  Include voice? (offline speech with sherpa-onnx + ~86 MB of models)", default=False)
@@ -811,6 +832,8 @@ def main() -> None:
         est_gb += 0.1 + 0.15 + (0.3 if want_prov else 0) + (0.1 if want_voice else 0)
     if want_llama:
         est_gb += 0.19 * want_linux + 0.14 * want_win
+    if want_desktop:
+        est_gb += 0.22 * want_win + 0.02 * want_linux
     est_gb += sum(m["size_gb"] for m in chosen_models)
 
     console.print(f"\n  Estimated USB usage : [bold]~{est_gb:.1f} GB[/bold]")
@@ -844,6 +867,8 @@ def main() -> None:
                 console.print(f"  [yellow]⚠ Failed:[/yellow] {', '.join(failed)}")
         if want_llama:
             setup_llama_server(usb_root, os_name)
+        if want_desktop:
+            setup_desktop_control(usb_root, os_name)
 
     # 3e — GGUF models
     if chosen_models:

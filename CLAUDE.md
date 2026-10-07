@@ -62,6 +62,8 @@ carry-ai/
 │   └── desktop.py           # Native desktop chat app — drives the same Agent as the web UI (customtkinter/tkinter), run by launcher.py
 
 ├── mcp/
+│   ├── bridge.py            # Boot: connect servers in the background, publish tools to the agent
+│   ├── defaults.py          # Built-in "desktop" server: Windows-MCP / computer-use-linux
 │   ├── client.py            # JSON-RPC transport: stdio + Streamable HTTP (MCP 2026-07-28, legacy-handshake fallback)
 │   ├── config.py            # MCP server configuration loader
 │   └── registry.py          # Thread-safe MCP tool registry
@@ -355,6 +357,10 @@ Inspired by [farzaa/clicky](https://github.com/farzaa/clicky). Push-to-talk → 
 | [Onyx](https://github.com/onyx-dot-app/onyx) | `providers/onyx_provider.py` | RAG with 50+ connectors |
 | [llmfit](https://github.com/AlexsJones/llmfit) | `integrations/llmfit_advisor.py` | Hardware-aware model selection |
 | [clicky](https://github.com/farzaa/clicky) | `integrations/voice_tools.py` | Push-to-talk voice pipeline (Python port) |
+| [Windows-MCP](https://github.com/CursorTouch/Windows-MCP) | `mcp/defaults.py` | Default desktop control on Windows (UI Automation) |
+| [computer-use-linux](https://github.com/agent-sh/computer-use-linux) | `mcp/defaults.py` | Default desktop control on Linux (AT-SPI) |
+| [Monty](https://github.com/pydantic/monty) | `integrations/python_sandbox.py` | Sandboxed `run_python` |
+| [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) | `integrations/voice_tools.py` | Offline speech-to-text / text-to-speech |
 
 ---
 
@@ -427,3 +433,9 @@ USB_ROOT/
     - **On:** the model only sees and may run tools in `agent.tools.SANDBOX_SAFE_TOOLS`, an allow-list. New tools are host tools unless registered with `sandbox_safe=True`. `Agent._check_tool` refuses the rest before the permission policy.
     - **Off:** `python_sandbox.set_host_access(True)` mounts `host_folders()` (Desktop/Documents/Downloads by default, never all of home) read-only at `/host/<name>`, listed in the `HOST_FOLDERS` input.
     - The starting state comes from `sandbox.start_sandboxed`. Its Linux runtime wheel is `manylinux_2_28`, last in `PIP_PLATFORMS["linux"]`. `install_packages` keeps earlier packages' `bin/` scripts (`_keep_scripts`), because `pip --target --upgrade` replaces that folder on every install.
+20. **MCP wiring and desktop control**
+    - **Boot:** `launcher._init_mcp` calls `mcp.bridge.start_mcp`. It merges `mcp/defaults.py` with `settings.json` `mcp.servers` (a `{"enabled": false}` entry turns a server off), connects on a background thread, and registers each tool as `mcp__<server>__<tool>` minus the config's `exclude_tools`.
+    - **Stdio transport:** reads on a thread with a `timeout_ms` per call, drains stderr, and opens no console window. `tools/call` is never retried, because a repeat could click or run something twice. The `initialized` handshake message goes through `notify()`, not `send()`.
+    - **Permission checks:** `PermissionPolicy` scans command-like arguments of any tool (`_command_text`), not just `shell`.
+    - **Desktop server (Windows):** Windows-MCP 0.8.5 is pinned in `portable/runtime.WINDOWS_MCP_REQUIREMENTS` and installed into its own folder `python-env/windows/servers/windows-mcp`. It must never go in carry-ai's site-packages: the MCP SDK's `mcp` package would shadow our `mcp/`. It runs with `python -I -S` plus `site.addsitedir`, telemetry off, and its host-changing tools excluded.
+    - **Desktop server (Linux):** `computer-use-linux` is pinned with SHA-256 per architecture at `bin/desktop/linux-<arch>/`. It is gated on glibc ≥ 2.39, its GNOME setup tools are excluded, and it is staged via `runtime.ensure_executable` on noexec mounts (llama-server uses the same helper with `whole_dir=True`).
