@@ -238,6 +238,26 @@ def _command_text(tool_name: str, args: dict) -> str:
     return "\n".join(parts)
 
 
+# tool-name suffix -> {mode value: what it does}
+_DESTRUCTIVE_MODES = {
+    "registry": {"set": "registry write", "delete": "registry delete"},
+    "process": {"kill": "killing a process"},
+}
+
+
+def _destructive_action(tool_name: str, args: dict) -> str:
+    """Describe a destructive system action (e.g. Registry mode=delete), or ''."""
+    if not isinstance(args, dict):
+        return ""
+    base = tool_name.lower().rsplit("__", 1)[-1]
+    modes = _DESTRUCTIVE_MODES.get(base)
+    action = modes.get(str(args.get("mode", "")).lower()) if modes else None
+    if not action:
+        return ""
+    target = args.get("path") or args.get("name") or args.get("pid") or ""
+    return f"{action}: {target}" if target else action
+
+
 def start_sandboxed_default() -> bool:
     """settings.sandbox.start_sandboxed (default False: host access, with prompts)."""
     try:
@@ -301,6 +321,15 @@ class PermissionPolicy:
                 reason = f"Potentially destructive command: {command[:100]}"
                 allowed = self._confirm_fn(tool_name, args, reason)
                 return allowed, "" if allowed else "User denied destructive command"
+
+        # Destructive modes of system tools (Windows-MCP Registry / Process):
+        # same treatment as overwriting a file — ask, or block in safe mode.
+        action = _destructive_action(tool_name, args)
+        if action:
+            if self.mode == "safe":
+                return False, f"Blocked {action} (safe mode)"
+            allowed = self._confirm_fn(tool_name, args, action[0].upper() + action[1:])
+            return allowed, "" if allowed else f"User denied {action}"
 
         if tool_name in ("write_file", "edit_file"):
             # Check if overwriting an existing file outside session

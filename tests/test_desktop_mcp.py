@@ -33,7 +33,8 @@ def test_linux_server_config(tmp_path, monkeypatch):
     monkeypatch.setattr(r, "glibc_version", lambda: (2, 39))
     cfg = d.linux_server(tmp_path)
     assert cfg.name == "desktop" and cfg.command == str(binary) and cfg.args == ["mcp"]
-    assert set(cfg.exclude_tools) == {"setup_accessibility", "setup_window_targeting"}
+    # setup_accessibility stays (its setting is restored by cleanup)
+    assert cfg.exclude_tools == ["setup_window_targeting"]
 
 
 @pytest.mark.parametrize("glibc", [(2, 35), None])
@@ -50,7 +51,9 @@ def test_windows_server_is_isolated_and_quiet(tmp_path):
     assert cfg.args[:2] == ["-I", "-S"]              # none of carry-ai's packages
     assert "serve" in cfg.args and "--exclude-tools" in cfg.args
     excluded = cfg.args[cfg.args.index("--exclude-tools") + 1].split(",")
-    assert {"PowerShell", "Registry", "Process", "Notification"} <= set(excluded)
+    # system tools stay available; only duplicates and trace-leaving ones go
+    assert not {"PowerShell", "Registry", "Process"} & set(excluded)
+    assert "Notification" in excluded
     assert cfg.exclude_tools == excluded             # also filtered on our side
     assert cfg.env["ANONYMIZED_TELEMETRY"] == "false" and cfg.env["POSTHOG_API_KEY"] == ""
 
@@ -133,3 +136,49 @@ def test_ensure_executable_stages_on_noexec(tmp_path, monkeypatch):
 
     monkeypatch.setattr(r.os, "access", lambda p, mode: True)
     assert r.ensure_executable(folder / "llama-server", str(session)) == folder / "llama-server"
+
+
+# ---------------------------------------------------------------------------
+# Permission prompts for system tools
+# ---------------------------------------------------------------------------
+
+def test_registry_writes_and_process_kills_ask_first():
+    from agent.agent import PermissionPolicy
+    asked = []
+    ask = PermissionPolicy(mode="ask", confirm_fn=lambda t, a, why: asked.append(why) or True)
+    assert ask.check("mcp__desktop__registry", {"mode": "get", "path": "HKCU:\\X"}) == (True, "")
+    assert ask.check("mcp__desktop__registry", {"mode": "delete", "path": "HKCU:\\X"}) == (True, "")
+    assert ask.check("mcp__desktop__process", {"mode": "kill", "name": "notepad"}) == (True, "")
+    assert ask.check("mcp__desktop__process", {"mode": "list"}) == (True, "")
+    assert asked == ["Registry delete: HKCU:\\X", "Killing a process: notepad"]
+    safe = PermissionPolicy(mode="safe")
+    assert safe.check("mcp__desktop__registry", {"mode": "set", "path": "HKLM:\\Y"})[0] is False
+    yolo = PermissionPolicy(mode="yolo")
+    assert yolo.check("mcp__desktop__process", {"mode": "kill", "pid": 4}) == (True, "")
+
+
+# ---------------------------------------------------------------------------
+# Host settings restored on cleanup (GNOME accessibility)
+# ---------------------------------------------------------------------------
+
+def test_changed_host_settings_are_restored(monkeypatch):
+    from cleanup import cleanup as c
+    store = {("org.gnome.desktop.interface", "toolkit-accessibility"): "false"}
+    calls = []
+
+    def fake(*args):
+        calls.append(args)
+        if args[0] == "get":
+            return store.get((args[1], args[2]))
+        store[(args[1], args[2])] = args[3]
+        return ""
+
+    monkeypatch.setattr(c, "_gsettings", fake)
+    monkeypatch.setattr(c.sys, "platform", "linux")
+    assert c.snapshot_host_settings() == 1
+    store[("org.gnome.desktop.interface", "toolkit-accessibility")] = "true"  # tool turned it on
+    assert c.restore_host_settings() == 1
+    assert store[("org.gnome.desktop.interface", "toolkit-accessibility")] == "false"
+    assert c.restore_host_settings() == 0                                      # unchanged: no write
+    assert sum(1 for a in calls if a[0] == "set") == 1
+    assert "settings_restored" in c.full_cleanup(session_dir=None, dry_run=True)

@@ -328,6 +328,14 @@ def boot(args: argparse.Namespace) -> None:
         decrypted_keys = _decrypt_keys(config_dir, args.dry_run)
 
     # --- Initialize MCP connections ---
+    # Host settings desktop control may change (e.g. GNOME accessibility)
+    # are recorded now and put back by cleanup.
+    if not args.dry_run:
+        try:
+            from cleanup.cleanup import snapshot_host_settings
+            snapshot_host_settings()
+        except Exception as e:
+            log.debug("Host settings snapshot: %s", e)
     mcp_bridge = _init_mcp(config_dir, args.dry_run)
 
     # --- Load plugins ---

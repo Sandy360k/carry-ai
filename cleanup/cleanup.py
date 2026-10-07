@@ -177,6 +177,59 @@ def _kill_via_os_commands(dry_run: bool) -> int:
 
 
 # ===================================================================
+# Step 1b: Restore host settings carry-ai's tools may change
+# ===================================================================
+#
+# Desktop control on Linux (computer-use-linux's setup_accessibility) turns
+# GNOME's toolkit-accessibility on so apps expose their accessibility tree.
+# The value at boot is recorded and put back on cleanup, so the setting
+# leaves with the USB. Only gsettings (a host binary) is needed, nothing on
+# the stick, so this works after eject too.
+
+TRACKED_GSETTINGS = [
+    ("org.gnome.desktop.interface", "toolkit-accessibility"),
+]
+_HOST_SETTINGS: list[tuple[str, str, str]] = []   # (schema, key, value at boot)
+
+
+def _gsettings(*args: str) -> str | None:
+    gs = shutil.which("gsettings")
+    if not gs:
+        return None
+    try:
+        out = subprocess.run([gs, *args], capture_output=True, text=True, timeout=5)
+        return out.stdout.strip() if out.returncode == 0 else None
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
+def snapshot_host_settings() -> int:
+    """Record tracked host settings at boot. Returns how many were recorded."""
+    _HOST_SETTINGS.clear()
+    if not sys.platform.startswith("linux"):
+        return 0
+    for schema, key in TRACKED_GSETTINGS:
+        value = _gsettings("get", schema, key)
+        if value is not None:
+            _HOST_SETTINGS.append((schema, key, value))
+    return len(_HOST_SETTINGS)
+
+
+def restore_host_settings(dry_run: bool = False) -> int:
+    """Put back tracked settings that changed during the session."""
+    restored = 0
+    for schema, key, value in _HOST_SETTINGS:
+        if _gsettings("get", schema, key) == value:
+            continue
+        log.info("Restoring %s %s to %s", schema, key, value)
+        if not dry_run and _gsettings("set", schema, key, value) is None:
+            log.warning("Could not restore %s %s", schema, key)
+            continue
+        restored += 1
+    return restored
+
+
+# ===================================================================
 # Step 2: Wipe session directory
 # ===================================================================
 
@@ -546,6 +599,7 @@ def full_cleanup(session_dir: str | Path | None = None,
 
     results = {
         "processes_killed": 0,
+        "settings_restored": 0,
         "session_wiped": False,
         "clipboard_cleared": False,
         "recent_scrubbed": False,
@@ -563,6 +617,12 @@ def full_cleanup(session_dir: str | Path | None = None,
     # Brief pause for processes to release file handles
     if not dry_run and results["processes_killed"] > 0:
         time.sleep(1)
+
+    # Step 1b: Restore host settings (after the tools that changed them stopped)
+    try:
+        results["settings_restored"] = restore_host_settings(dry_run=dry_run)
+    except Exception as e:
+        log.error("Host settings restore failed: %s", e)
 
     # Step 2: Wipe session directory
     log.info("[2/6] Wiping session directory...")

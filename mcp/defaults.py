@@ -18,11 +18,14 @@ option). Off with settings ``mcp.desktop_control: false`` or
 ``mcp.servers.desktop: {"enabled": false}``. Like every MCP tool these are
 hidden in sandbox mode and go through the permission policy.
 
-Tools that duplicate carry-ai's own (shell, files, clipboard, web) or that
-leave lasting changes on the host are excluded: Windows-MCP's PowerShell,
-Registry, FileSystem, Process, Scrape, Clipboard and Notification (toasts
-stay in the Action Center); computer-use-linux's setup_accessibility and
-setup_window_targeting (they change GNOME settings / install an extension).
+Excluded: tools that duplicate carry-ai's own (Windows-MCP FileSystem,
+Scrape, Clipboard) or that would leave carry-ai on record after eject
+(Notification: toasts stay in the Action Center; computer-use-linux's
+setup_window_targeting installs a GNOME Shell extension). PowerShell,
+Registry and Process stay, under the permission policy.
+computer-use-linux's setup_accessibility stays too: the GNOME setting it
+turns on is recorded at boot and restored by cleanup
+(cleanup.snapshot_host_settings / restore_host_settings).
 """
 
 import logging
@@ -38,9 +41,15 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 USB_ROOT = PROJECT_ROOT.parent
 SERVER_NAME = "desktop"
 
-WINDOWS_EXCLUDE = ["PowerShell", "Registry", "FileSystem", "Process", "Scrape",
-                   "Clipboard", "Notification"]
-LINUX_EXCLUDE = ["setup_accessibility", "setup_window_targeting"]
+# Excluded: duplicates of carry-ai's own tools (FileSystem → read/write_file,
+# Scrape → web_fetch, Clipboard → clipboard_*), and anything that would leave
+# carry-ai on record after eject (Notification: toasts stay in the Action
+# Center; setup_window_targeting: installs a GNOME Shell extension). Tools
+# that change the system on the user's behalf (PowerShell, Registry,
+# Process) stay: "no trace" is about carry-ai, not about limiting it. They
+# go through the permission policy (agent.agent.PermissionPolicy).
+WINDOWS_EXCLUDE = ["FileSystem", "Scrape", "Clipboard", "Notification"]
+LINUX_EXCLUDE = ["setup_window_targeting"]
 
 # Windows-MCP runs with -I -S: none of carry-ai's packages (whose `mcp`
 # folder would clash with the MCP SDK's), then its own folder is added as
