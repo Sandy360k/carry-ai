@@ -286,7 +286,14 @@ ReAct-pattern agent loop (Observe → Think → Act → Observe) with 30+ tools:
 | Category | Tools |
 |----------|-------|
 | **System** | `shell`, `get_system_info`, `model_recommend` |
-| **Code** | `run_python` — sandboxed Python ([Monty](https://github.com/pydantic/monty)): no host files, network or processes; `/work` scratch folder in the session dir; 10 s / 256 MB limits; variables persist between calls |
+| **Code** | `run_python` — sandboxed Python ([Monty](https://github.com/pydantic/monty)): no network or processes; `/work` scratch folder in the session dir; with host access on, your Desktop/Documents/Downloads are readable at `/host`; 10 s / 256 MB limits; variables persist between calls |
+
+**Sandbox switch** — the **Access** button in the chat window (also in the web UI's Settings, or `/sandbox on|off` in the terminal) chooses what the AI may touch:
+
+- **🔒 Sandboxed:** only tools that can't reach this PC — `run_python` on `/work`, web fetch, memory.
+- **🔓 Host access:** files, shell, screen and clipboard as well, with the usual permission prompts.
+
+Set the starting state with `sandbox.start_sandboxed`.
 | **Files** | `read_file`, `write_file`, `edit_file`, `list_files`, `search_files` |
 | **Screen** | `screenshot`, `click`, `type_text` |
 | **Clipboard** | `clipboard_read`, `clipboard_write` |

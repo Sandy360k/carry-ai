@@ -22,7 +22,14 @@ Rust that executes in its own worker process:
 Variables persist between calls (one REPL session per agent), so the model
 can build up a computation step by step; ``reset`` starts fresh.
 
-Settings (``sandbox.*``): enabled, timeout_s, max_memory_mb.
+Host access (the chat window's sandbox switch, Agent.set_sandboxed): when
+it is on, ``host_folders()`` (Desktop, Documents, Downloads by default) are
+mounted read-only at /host/<name> and listed in the HOST_FOLDERS variable,
+so the code can read the user's real files; changing them stays with the
+permission-checked write_file / shell tools. In sandbox mode they are gone.
+
+Settings (``sandbox.*``): enabled, timeout_s, max_memory_mb, start_sandboxed,
+host_folders.
 
 pydantic-monty is optional: without it (or its worker binary) the tool is
 not registered. With ``pip install --target`` (the USB layout) the worker
@@ -91,6 +98,28 @@ def _work_dir() -> Path:
     return path
 
 
+def host_folders() -> list[Path]:
+    """Host folders run_python may read (at /host/<name>) with host access on.
+
+    ``sandbox.host_folders`` in settings, else Desktop, Documents and
+    Downloads. Not the whole home folder: that holds .ssh, browser profiles
+    and AppData, and on Windows contains %TEMP% (the session dir), which
+    Monty would refuse as an overlapping mount.
+    """
+    configured = sandbox_settings().get("host_folders")
+    if configured:
+        paths = [Path(os.path.expandvars(os.path.expanduser(p))) for p in configured]
+    else:
+        home = Path.home()
+        paths = [home / "Desktop", home / "Documents", home / "Downloads"]
+    seen, out = set(), []
+    for p in paths:
+        if p.is_dir() and p.name.lower() not in seen:
+            seen.add(p.name.lower())
+            out.append(p)
+    return out
+
+
 def _clip(text: str, limit: int | None = None) -> str:
     limit = limit or MAX_OUTPUT_CHARS
     if len(text) <= limit:
@@ -115,7 +144,38 @@ class PythonSandbox:
         self._pool = None
         self._session = None
         self._mount = None
+        self._host_mounts: list = []
+        self.host_access = False
         self._lock = threading.Lock()
+
+    def set_host_access(self, on: bool) -> None:
+        """Mount (read-only) or unmount the host folders at /host/<name>."""
+        with self._lock:
+            self.host_access = bool(on)
+            if not on:
+                self._close_host_mounts()
+
+    def _close_host_mounts(self) -> None:
+        for m in self._host_mounts:
+            try:
+                m.close()
+            except Exception as e:
+                log.debug("Closing host mount: %s", e)
+        self._host_mounts = []
+
+    def _mounts(self) -> list:
+        mounts = [self._mount]
+        if self.host_access:
+            if not self._host_mounts:
+                for folder in host_folders():
+                    try:
+                        self._host_mounts.append(_monty.MountDir(
+                            host_path=folder, virtual_path=f"/host/{folder.name}",
+                            mode="read-only"))
+                    except (OSError, ValueError) as e:
+                        log.info("Not mounting %s in the sandbox: %s", folder, e)
+            mounts += self._host_mounts
+        return mounts
 
     # -- lifecycle -----------------------------------------------------
 
@@ -148,6 +208,7 @@ class PythonSandbox:
 
     def close(self) -> None:
         self.reset()
+        self._close_host_mounts()
         for obj in (self._mount, self._pool):
             if obj is None:
                 continue
@@ -166,8 +227,13 @@ class PythonSandbox:
                 self.reset()
             output = _monty.CollectString(max_bytes=MAX_OUTPUT_CHARS * 4)
             try:
-                value = self._ensure_session().feed_run(
-                    code, print_callback=output, mount=self._mount, cwd=VIRTUAL_WORK)
+                session = self._ensure_session()
+                mounts = self._mounts()
+                value = session.feed_run(
+                    code, print_callback=output, mount=mounts, cwd=VIRTUAL_WORK,
+                    # /host itself isn't listable (only its mounts are), so
+                    # tell the code where they are
+                    inputs={"HOST_FOLDERS": [m.virtual_path for m in mounts[1:]]})
             except _monty.MontyCrashedError as e:
                 self.reset()
                 return _clip(output.output + f"\n[sandbox stopped: {e}] "
@@ -191,6 +257,15 @@ class PythonSandbox:
 # ---------------------------------------------------------------------------
 
 _SANDBOX: PythonSandbox | None = None
+_HOST_ACCESS = False
+
+
+def set_host_access(on: bool) -> None:
+    """Follow the chat's sandbox switch: host access on = /host readable."""
+    global _HOST_ACCESS
+    _HOST_ACCESS = bool(on)
+    if _SANDBOX is not None:
+        _SANDBOX.set_host_access(_HOST_ACCESS)
 
 
 def _shutdown() -> None:
@@ -212,8 +287,11 @@ TOOL_DESCRIPTION = (
     "to start fresh). It is a subset of Python 3 with these modules: json, re, math, "
     "datetime, collections, itertools, functools, random, dataclasses, typing, "
     "base64, pathlib, os.path, sys, time (no csv, statistics, hashlib, third-party "
-    "packages, network or subprocess). The only folder is /work, a scratch folder "
-    "(the working directory) that is wiped when the USB is removed. "
+    "packages, network or subprocess). /work is a scratch folder (the working "
+    "directory) that is wiped when the USB is removed. When the user has turned "
+    "host access on, folders from this PC (Desktop, Documents, Downloads) are "
+    "readable but not writable; their paths are in the list HOST_FOLDERS (e.g. "
+    "'/host/Documents'), empty in sandbox mode. Use write_file to change real files. "
     "Limits: {timeout} s and {memory} MB per run."
 )
 
@@ -235,6 +313,7 @@ def register_python_sandbox_tool(register_tool) -> bool:
         global _SANDBOX
         if _SANDBOX is None:
             _SANDBOX = PythonSandbox(timeout_s=timeout, max_memory_mb=memory)
+            _SANDBOX.set_host_access(_HOST_ACCESS)
         return _SANDBOX.run(code, reset=bool(reset))
 
     register_tool(

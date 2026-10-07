@@ -43,8 +43,9 @@ def _fake_monty(results):
         def __exit__(self, *a):
             log["closed"] += 1
 
-        def feed_run(self, code, print_callback=None, mount=None, cwd=None):
+        def feed_run(self, code, print_callback=None, mount=None, cwd=None, inputs=None):
             log["feeds"].append((code, cwd))
+            log["inputs"] = inputs
             printed, value = results.pop(0)
             print_callback.output = printed
             if isinstance(value, Exception):
@@ -68,6 +69,7 @@ def _fake_monty(results):
     class MountDir:
         def __init__(self, **kw):
             log["mount"] = kw
+            self.virtual_path = kw["virtual_path"]
 
         def close(self):
             pass
@@ -99,6 +101,7 @@ def test_output_and_value_are_returned(sandbox, tmp_path):
     assert log["limits"] == {"max_feed_duration_secs": 5.0, "max_memory": 64 * 1024 * 1024}
     assert log["mount"]["host_path"] == tmp_path and log["mount"]["mode"] == "read-write"
     assert log["feeds"][0][1] == "/work"
+    assert log["inputs"] == {"HOST_FOLDERS": []}      # sandbox has no host folders
 
 
 def test_errors_show_traceback_and_keep_state(sandbox):

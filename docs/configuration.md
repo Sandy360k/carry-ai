@@ -218,7 +218,17 @@ Place this file at `config/settings.json` on the USB drive (next to `carry-ai/`)
     // session dir (wiped on eject). Only registered if pydantic-monty is installed.
     "enabled": true,
     "timeout_s": 10,        // per run; a timeout resets the sandbox's variables
-    "max_memory_mb": 256
+    "max_memory_mb": 256,
+
+    // Sandbox switch (chat window "Access" button, web UI Settings, /sandbox on|off):
+    //   🔒 Sandboxed  — the model only gets tools that can't touch this PC
+    //                   (run_python on /work, web_fetch/scrape, memory, system info);
+    //                   shell, file, screen, clipboard, plugin and MCP tools are hidden
+    //                   and refused.
+    //   🔓 Host access — every tool, under agent.permission_mode; run_python can also
+    //                   READ host_folders at /host/<name> (writes stay with write_file).
+    "start_sandboxed": false,   // which one a new session starts in
+    "host_folders": []          // [] = Desktop, Documents, Downloads; or your own paths
   },
 
   "experimental": {

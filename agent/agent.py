@@ -25,7 +25,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Optional
 
-from agent.tools import get_tool_definitions, execute_tool, TOOL_REGISTRY
+from agent.tools import get_tool_definitions, execute_tool, is_sandbox_safe, TOOL_REGISTRY
 from agent.memory import MemoryStore, get_memory_tools
 
 log = logging.getLogger("carry-ai.agent")
@@ -217,6 +217,15 @@ class ConversationHistory:
 # Permission policy
 # ===================================================================
 
+def start_sandboxed_default() -> bool:
+    """settings.sandbox.start_sandboxed (default False: host access, with prompts)."""
+    try:
+        from config.settings import load_settings
+        return bool(load_settings().to_dict().get("sandbox", {}).get("start_sandboxed", False))
+    except Exception:
+        return False
+
+
 class PermissionPolicy:
     """Controls which tool calls require user confirmation.
 
@@ -342,6 +351,10 @@ class Agent:
 
         self._history = ConversationHistory(system_prompt, context_budget=budget)
         self._policy = PermissionPolicy(mode=self._context.get("permission_mode", "ask"))
+        # Sandbox mode: only tools that can't touch this PC (see
+        # agent.tools.SANDBOX_SAFE_TOOLS). Toggled from the chat window.
+        self._sandboxed = False
+        self.set_sandboxed(self._context.get("sandboxed", start_sandboxed_default()))
         # Both initialized lazily. Hybrid mode keeps both: the "local"
         # provider goes to llama-server, everything else to the API router.
         self._local_runner = None   # LocalRunner
@@ -451,7 +464,7 @@ class Agent:
         if self._history.needs_compaction:
             self._history.compact()
 
-        tools = get_tool_definitions()
+        tools = get_tool_definitions(sandboxed=self._sandboxed)
         iteration = 0
 
         while iteration < MAX_ITERATIONS:
@@ -497,7 +510,7 @@ class Agent:
                 log.info("Tool call: %s(%s)", tool_name, _truncate_args(tool_args))
 
                 # Permission check
-                allowed, deny_reason = self._policy.check(tool_name, tool_args)
+                allowed, deny_reason = self._check_tool(tool_name, tool_args)
                 if not allowed:
                     result = f"Permission denied: {deny_reason}"
                     log.info("Tool denied: %s — %s", tool_name, deny_reason)
@@ -569,7 +582,7 @@ class Agent:
         if self._history.needs_compaction:
             self._history.compact()
 
-        tools = get_tool_definitions()
+        tools = get_tool_definitions(sandboxed=self._sandboxed)
         iteration = 0
 
         # Route selection only applies to the API router; the local runner
@@ -640,7 +653,7 @@ class Agent:
 
                 yield {"type": "tool_start", "data": {"name": tool_name, "args": tool_args}}
 
-                allowed, deny_reason = self._policy.check(tool_name, tool_args)
+                allowed, deny_reason = self._check_tool(tool_name, tool_args)
                 if not allowed:
                     result = f"Permission denied: {deny_reason}"
                 else:
@@ -657,6 +670,32 @@ class Agent:
 
         yield {"type": "text", "data": f"(Reached max iterations: {MAX_ITERATIONS})"}
         yield {"type": "done", "data": None}
+
+    @property
+    def sandboxed(self) -> bool:
+        return self._sandboxed
+
+    def set_sandboxed(self, on: bool) -> None:
+        """Sandbox mode on: the model only gets tools that can't reach the host
+        (run_python on /work, web fetch, memory). Off: every tool, under the
+        permission policy, and run_python can read the host folders at /host.
+        Takes effect from the next tool call.
+        """
+        self._sandboxed = bool(on)
+        try:
+            from integrations.python_sandbox import set_host_access
+            set_host_access(not self._sandboxed)
+        except ImportError:
+            pass
+        log.info("Sandbox mode %s.", "on" if self._sandboxed else "off (host access)")
+
+    def _check_tool(self, tool_name: str, tool_args: dict) -> tuple[bool, str]:
+        """Sandbox gate first, then the permission policy."""
+        if self._sandboxed and not is_sandbox_safe(tool_name):
+            return False, (f"'{tool_name}' needs access to this PC, and sandbox mode is on. "
+                           "Use run_python (files in /work), or ask the user to turn "
+                           "host access on in the chat window.")
+        return self._policy.check(tool_name, tool_args)
 
     def set_permission_mode(self, mode: str) -> None:
         """Change permission policy: 'permissive'/'yolo', 'ask', 'safe', 'strict'."""
@@ -685,6 +724,7 @@ class Agent:
             "estimated_tokens": self._history.estimated_tokens,
             "tools": len(TOOL_REGISTRY),
             "permission_mode": self._policy.mode,
+            "sandboxed": self._sandboxed,
         }
 
     def run(self, context: dict | None = None) -> None:
@@ -744,6 +784,11 @@ class Agent:
                 print(f"  Permission mode: {arg}")
             else:
                 print(f"  Current: {self._policy.mode}. Options: permissive, ask, strict")
+        elif cmd == "/sandbox":
+            if arg in ("on", "off"):
+                self.set_sandboxed(arg == "on")
+            print("  Sandbox: " + ("on — only tools that can't touch this PC"
+                                   if self._sandboxed else "off — host access (asks first)"))
         elif cmd == "/history":
             for msg in self._history.user_messages[-10:]:
                 role = msg["role"]
@@ -802,6 +847,7 @@ class Agent:
             print("  /clear      -- Clear conversation history")
             print("  /tools      -- List available tools")
             print("  /permission -- Set permission mode (permissive/ask/strict)")
+            print("  /sandbox    -- on: no access to this PC; off: host access")
             print("  /history    -- Show recent conversation")
             print("  /remember   -- Store a note in long-term memory")
             print("  /memory     -- View/search/manage memories")

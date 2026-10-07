@@ -130,6 +130,8 @@ class ChatBackend:
     # Boot context from launcher.py (mode, model_path, api_keys, ...); the
     # Agent is built from it so the desktop app shares the web UI's engine.
     boot_context: dict = {}
+    # Chat-window sandbox switch; None = the setting's default
+    sandboxed: bool | None = None
 
     @classmethod
     def key_for(cls, provider: str) -> str:
@@ -181,6 +183,8 @@ class ChatBackend:
                 ctx["api_keys"] = self.preloaded_keys
             agent = Agent(boot_context=ctx)
             agent._policy._confirm_fn = self._gui_confirm   # GUI, not stdin
+            if self.sandboxed is not None:
+                agent.set_sandboxed(self.sandboxed)
             self._agent = agent
         return self._agent
 
@@ -407,6 +411,19 @@ class CarryAIApp:
                                      highlightthickness=0, font=(FONT_FAMILY, 11))
         self._model_menu.pack(padx=14, pady=(0, 8), fill="x")
         self._refresh_provider_menu()
+
+        # Sandbox switch: what the AI may touch on this PC
+        self._lbl(sb, "Access")
+        from agent.agent import start_sandboxed_default
+        if ChatBackend.sandboxed is None:
+            ChatBackend.sandboxed = start_sandboxed_default()
+        self._sandbox_btn = tk.Button(sb, command=self._toggle_sandbox, relief="flat",
+                                      font=(FONT_FAMILY, 10, "bold"), cursor="hand2")
+        self._sandbox_btn.pack(padx=14, fill="x")
+        self._sandbox_note = tk.Label(sb, font=(FONT_FAMILY, 9), fg=self.C["fg3"],
+                                      bg=self.C["bg2"], wraplength=185, justify="left")
+        self._sandbox_note.pack(padx=14, pady=(3, 0), anchor="w")
+        self._show_sandbox()
 
         self._sep(sb)
 
@@ -1006,6 +1023,25 @@ class CarryAIApp:
 
     def _open_api_keys(self):
         ApiKeysDialog(self)
+
+    # ── Sandbox ──
+    def _show_sandbox(self):
+        on = bool(ChatBackend.sandboxed)
+        self._sandbox_btn.config(
+            text="🔒 Sandboxed" if on else "🔓 Host access",
+            bg=self.C["accent"] if on else self.C["accent2"], fg="#111")
+        self._sandbox_note.config(text=(
+            "The AI can't touch this PC: Python runs in a sandbox, plus web and memory."
+            if on else
+            "The AI can use files, shell and screen here, and asks before risky steps."))
+
+    def _toggle_sandbox(self):
+        ChatBackend.sandboxed = not ChatBackend.sandboxed
+        agent = self.backend._agent
+        if agent is not None:
+            agent.set_sandboxed(ChatBackend.sandboxed)
+        self._show_sandbox()
+        self._update_status("Sandbox on" if ChatBackend.sandboxed else "Host access on", True)
 
     # ── Voice ──
     def _toggle_mic(self):

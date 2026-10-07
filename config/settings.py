@@ -111,6 +111,11 @@ DEFAULTS = {
         "enabled": True,
         "timeout_s": 10,
         "max_memory_mb": 256,
+        # Chat-window switch (🔒 Sandbox): on = only tools that can't touch
+        # this PC; off = all tools under the permission policy, and
+        # run_python can read host_folders at /host/<name>.
+        "start_sandboxed": False,
+        "host_folders": [],       # default: Desktop, Documents, Downloads
     },
 
     # Peripheral features, off by default. They don't fit the disposable,

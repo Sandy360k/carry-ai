@@ -228,6 +228,14 @@ footer { background: var(--bg2); border-top: 1px solid var(--border);
     </div>
   </div>
   <div class="card">
+    <h3>Sandbox</h3>
+    <div id="sandbox-state" style="margin:4px 0 8px;">--</div>
+    <div style="display:flex;gap:8px;">
+      <button class="btn" onclick="setSandbox(true)">🔒 Sandboxed</button>
+      <button class="btn" onclick="setSandbox(false)">🔓 Host access</button>
+    </div>
+  </div>
+  <div class="card">
     <h3>Providers</h3>
     <div id="providers-list">Loading...</div>
   </div>
@@ -485,12 +493,29 @@ async function switchMode(mode) {
   } catch(e) { logActivity('Mode switch failed: ' + e.message); }
 }
 
+// --- Sandbox switch ---
+const SANDBOX_TEXT = {
+  true: '🔒 Sandboxed — the AI can\'t touch this PC (run_python on /work, web, memory)',
+  false: '🔓 Host access — files, shell and screen, asking before risky steps'};
+function showSandbox(on) {
+  document.getElementById('sandbox-state').textContent = SANDBOX_TEXT[!!on];
+}
+async function setSandbox(on) {
+  try {
+    const r = await fetch('/api/sandbox', {method:'POST',headers:{'Content-Type':'application/json'},
+                                          body:JSON.stringify({sandboxed:on})});
+    const d = await r.json(); showSandbox(d.sandboxed);
+    logActivity('Sandbox ' + (d.sandboxed ? 'on' : 'off (host access)'));
+  } catch(e) { logActivity('Sandbox switch failed: ' + e.message); }
+}
+
 // --- Status polling ---
 async function pollStatus() {
   try {
     const resp = await fetch('/api/status');
     const s = await resp.json();
     document.getElementById('mode-badge').textContent = s.mode || '--';
+    if (s.agent && 'sandboxed' in s.agent) showSandbox(s.agent.sandboxed);
     const dot = document.getElementById('status-dot');
     const stxt = document.getElementById('status-text');
     dot.className = 'dot on'; stxt.textContent = s.model || 'ready';
@@ -705,6 +730,19 @@ def create_app(agent=None, config=None):
             return jsonify({"error": "Invalid mode. Choose: local, api, hybrid"}), 400
         config["mode"] = new_mode
         return jsonify({"mode": new_mode, "status": "switched"})
+
+    # ------------------------------------------------------------------
+    # Sandbox switch (Agent.set_sandboxed)
+    # ------------------------------------------------------------------
+
+    @app.route("/api/sandbox", methods=["POST"])
+    def api_sandbox():
+        data = request.get_json(silent=True) or {}
+        if not isinstance(data.get("sandboxed"), bool):
+            return jsonify({"error": "Send {\"sandboxed\": true|false}"}), 400
+        agent = _get_agent()
+        agent.set_sandboxed(data["sandboxed"])
+        return jsonify({"sandboxed": agent.sandboxed})
 
     # ------------------------------------------------------------------
     # History API
