@@ -120,6 +120,11 @@ class McpConfigLoader:
 
             mcp_section = data.get("mcp", {}).get("servers", {})
             for name, cfg in mcp_section.items():
+                if cfg.get("enabled", True) is False:
+                    # {"enabled": false} switches off a server, including a
+                    # built-in default (mcp/defaults.py) — no command needed
+                    self._servers[name] = McpServerConfig(name=name, enabled=False)
+                    continue
                 server = McpServerConfig(
                     name=name,
                     transport=cfg.get("transport", "stdio"),

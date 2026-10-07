@@ -217,6 +217,27 @@ class ConversationHistory:
 # Permission policy
 # ===================================================================
 
+# Argument names that carry something to execute, in any tool
+_COMMAND_ARGS = ("command", "cmd", "script", "code", "commands", "shell", "powershell")
+
+
+def _command_text(tool_name: str, args: dict) -> str:
+    """The executable text in a tool call ('' if none), for _DANGEROUS_RE.
+
+    run_python is exempt: its code runs in the Monty sandbox, not on the host.
+    """
+    if tool_name == "run_python" or not isinstance(args, dict):
+        return ""
+    parts = []
+    for key, value in args.items():
+        if key.lower() in _COMMAND_ARGS:
+            if isinstance(value, str):
+                parts.append(value)
+            elif isinstance(value, list):
+                parts.extend(v for v in value if isinstance(v, str))
+    return "\n".join(parts)
+
+
 def start_sandboxed_default() -> bool:
     """settings.sandbox.start_sandboxed (default False: host access, with prompts)."""
     try:
@@ -268,9 +289,12 @@ class PermissionPolicy:
             allowed = self._confirm_fn(tool_name, args, reason)
             return allowed, "" if allowed else "User denied"
 
-        # 'ask' prompts for dangerous operations; 'safe' blocks them outright
-        if tool_name == "shell":
-            command = args.get("command", "")
+        # 'ask' prompts for dangerous operations; 'safe' blocks them outright.
+        # Any tool's command-like argument is checked, not just the built-in
+        # shell: MCP servers (desktop control, Desktop Commander, …) ship
+        # their own shell / PowerShell tools.
+        command = _command_text(tool_name, args)
+        if command:
             if _DANGEROUS_RE.search(command):
                 if self.mode == "safe":
                     return False, f"Blocked destructive command (safe mode): {command[:100]}"

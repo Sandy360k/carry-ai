@@ -31,6 +31,7 @@ Connection lifecycle:
 import json
 import logging
 import os
+import queue
 import subprocess
 import sys
 import threading
@@ -75,12 +76,19 @@ def _jsonrpc_request(method: str, params: dict = None, id: int = None) -> str:
 # ---------------------------------------------------------------------------
 
 class StdioTransport:
-    """Communicate with an MCP server via subprocess stdin/stdout."""
+    """Communicate with an MCP server via subprocess stdin/stdout.
+
+    stdout is read on a background thread into a queue, so a server that
+    stops answering times out (config.timeout_ms) instead of hanging the
+    agent; stderr is drained to the debug log so a chatty server can't
+    fill the pipe and block. No console window on Windows.
+    """
 
     def __init__(self, config: McpServerConfig):
         self.config = config
         self._proc: Optional[subprocess.Popen] = None
         self._lock = threading.Lock()
+        self._lines: "queue.Queue[bytes | None]" = queue.Queue()
 
     def start(self) -> bool:
         """Launch the MCP server subprocess."""
@@ -89,6 +97,7 @@ class StdioTransport:
 
         env = dict(os.environ)
         env.update(resolved.env)
+        flags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if sys.platform == "win32" else 0
 
         try:
             self._proc = subprocess.Popen(
@@ -98,16 +107,49 @@ class StdioTransport:
                 stderr=subprocess.PIPE,
                 env=env,
                 bufsize=0,
+                creationflags=flags,
             )
-            logger.info("Started MCP server '%s': PID %d, cmd=%s",
-                        self.config.name, self._proc.pid, cmd)
-            return True
         except FileNotFoundError:
             logger.error("MCP server command not found: %s", cmd)
             return False
         except Exception as e:
             logger.error("Failed to start MCP server '%s': %s", self.config.name, e)
             return False
+
+        threading.Thread(target=self._pump_stdout, args=(self._proc,), daemon=True,
+                         name=f"mcp-{self.config.name}-out").start()
+        threading.Thread(target=self._drain_stderr, args=(self._proc,), daemon=True,
+                         name=f"mcp-{self.config.name}-err").start()
+        logger.info("Started MCP server '%s': PID %d, cmd=%s",
+                    self.config.name, self._proc.pid, cmd)
+        return True
+
+    def _pump_stdout(self, proc) -> None:
+        try:
+            for line in iter(proc.stdout.readline, b""):
+                self._lines.put(line)
+        except (OSError, ValueError):
+            pass
+        self._lines.put(None)                 # EOF
+
+    def notify(self, method: str, params: dict = None) -> None:
+        """Send a JSON-RPC notification (no id, no reply expected)."""
+        if not self._proc or self._proc.poll() is not None:
+            raise RuntimeError(f"MCP server '{self.config.name}' is not running")
+        with self._lock:
+            try:
+                self._proc.stdin.write((_jsonrpc_request(method, params) + "\n").encode("utf-8"))
+                self._proc.stdin.flush()
+            except (BrokenPipeError, OSError) as e:
+                raise RuntimeError(f"MCP transport error: {e}") from e
+
+    def _drain_stderr(self, proc) -> None:
+        try:
+            for line in iter(proc.stderr.readline, b""):
+                logger.debug("[%s] %s", self.config.name,
+                             line.decode("utf-8", "replace").rstrip())
+        except (OSError, ValueError):
+            pass
 
     def send(self, method: str, params: dict = None, name: str = None) -> dict:
         """Send a JSON-RPC request and wait for response.
@@ -120,40 +162,46 @@ class StdioTransport:
 
         msg_id = _next_id()
         req = _jsonrpc_request(method, params, id=msg_id) + "\n"
+        deadline = time.monotonic() + max(1.0, self.config.timeout_ms / 1000)
 
         with self._lock:
             try:
                 self._proc.stdin.write(req.encode("utf-8"))
                 self._proc.stdin.flush()
-
-                # Read until we get the response matching our request id.
-                # Servers may interleave notifications (no "id") or
-                # server-initiated requests on stdout — skip those.
-                while True:
-                    line = self._proc.stdout.readline()
-                    if not line:
-                        raise RuntimeError("MCP server closed stdout")
-
-                    try:
-                        resp = json.loads(line.decode("utf-8"))
-                    except json.JSONDecodeError:
-                        logger.debug("Skipping non-JSON stdout line from '%s'",
-                                     self.config.name)
-                        continue
-
-                    if resp.get("id") != msg_id or "method" in resp:
-                        logger.debug("Skipping non-matching message from '%s': %s",
-                                     self.config.name, resp.get("method", resp.get("id")))
-                        continue
-
-                    if "error" in resp:
-                        err = resp["error"]
-                        raise RuntimeError(f"MCP error {err.get('code')}: {err.get('message')}")
-
-                    return resp.get("result", {})
-
             except (BrokenPipeError, OSError) as e:
                 raise RuntimeError(f"MCP transport error: {e}") from e
+
+            # Read until we get the response matching our request id.
+            # Servers may interleave notifications (no "id") or
+            # server-initiated requests on stdout — skip those.
+            while True:
+                try:
+                    line = self._lines.get(timeout=max(0.0, deadline - time.monotonic()))
+                except queue.Empty:
+                    raise RuntimeError(
+                        f"MCP server '{self.config.name}' did not answer {method} "
+                        f"within {self.config.timeout_ms / 1000:.0f} s") from None
+                if line is None:
+                    self._lines.put(None)      # stay at EOF for later calls
+                    raise RuntimeError("MCP server closed stdout")
+
+                try:
+                    resp = json.loads(line.decode("utf-8"))
+                except (json.JSONDecodeError, UnicodeDecodeError):
+                    logger.debug("Skipping non-JSON stdout line from '%s'",
+                                 self.config.name)
+                    continue
+
+                if resp.get("id") != msg_id or "method" in resp:
+                    logger.debug("Skipping non-matching message from '%s': %s",
+                                 self.config.name, resp.get("method", resp.get("id")))
+                    continue
+
+                if "error" in resp:
+                    err = resp["error"]
+                    raise RuntimeError(f"MCP error {err.get('code')}: {err.get('message')}")
+
+                return resp.get("result", {})
 
     def is_alive(self) -> bool:
         return self._proc is not None and self._proc.poll() is None
@@ -287,6 +335,19 @@ class HttpTransport:
         except _requests.RequestException as e:
             raise RuntimeError(f"MCP HTTP error: {e}") from e
 
+    def notify(self, method: str, params: dict = None) -> None:
+        """POST a JSON-RPC notification; the server answers 202 with no body."""
+        if not self._session:
+            raise RuntimeError("HTTP transport not started")
+        payload = {"jsonrpc": "2.0", "method": method}
+        if params is not None:
+            payload["params"] = params
+        try:
+            self._session.post(self.config.resolve_env().url, json=payload,
+                               timeout=self.config.timeout_ms / 1000)
+        except _requests.RequestException as e:
+            raise RuntimeError(f"MCP HTTP error: {e}") from e
+
     def is_alive(self) -> bool:
         return self._session is not None
 
@@ -310,9 +371,6 @@ class McpClient:
             result = client.call_tool("get_issue", {"number": 42})
         client.disconnect()
     """
-
-    MAX_RETRIES = 3
-    RETRY_DELAY = 2.0
 
     def __init__(self, config: McpServerConfig, registry: McpToolRegistry):
         self.config = config
@@ -409,9 +467,10 @@ class McpClient:
             logger.info("MCP '%s' initialized: %s (protocol %s)", self.name,
                         self._server_info.get("name", "unknown"), self._protocol)
             try:
-                self._transport.send("notifications/initialized")
-            except Exception:
-                pass  # notifications expect no response
+                # A notification: no id, and no reply to wait for
+                self._transport.notify("notifications/initialized")
+            except Exception as e:
+                logger.debug("MCP '%s' initialized-notification failed: %s", self.name, e)
             return True
         except Exception as e:
             logger.error("MCP '%s' handshake failed: %s", self.name, e)
@@ -447,24 +506,15 @@ class McpClient:
         if not self.is_connected:
             raise RuntimeError(f"MCP server '{self.name}' not connected")
 
-        for attempt in range(self.MAX_RETRIES):
-            try:
-                # name= sets the Mcp-Name header on Streamable HTTP so a
-                # gateway can route/meter per tool (ignored by stdio).
-                result = self._transport.send(
-                    "tools/call",
-                    {"name": tool_name, "arguments": arguments or {}},
-                    name=tool_name,
-                )
-                return result
-
-            except RuntimeError as e:
-                if attempt < self.MAX_RETRIES - 1:
-                    logger.warning("MCP tool call retry %d/%d for %s.%s: %s",
-                                   attempt + 1, self.MAX_RETRIES, self.name, tool_name, e)
-                    time.sleep(self.RETRY_DELAY * (attempt + 1))
-                else:
-                    raise
+        # One attempt only: tool calls are actions (a click, a keypress, a
+        # command), and repeating one after a timeout could do it twice.
+        # name= sets the Mcp-Name header on Streamable HTTP so a gateway can
+        # route/meter per tool (ignored by stdio).
+        return self._transport.send(
+            "tools/call",
+            {"name": tool_name, "arguments": arguments or {}},
+            name=tool_name,
+        )
 
     def disconnect(self):
         """Disconnect from the MCP server and unregister tools."""

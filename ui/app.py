@@ -821,7 +821,13 @@ def create_app(agent=None, config=None):
 
     @app.route("/api/mcp/servers")
     def api_mcp_servers():
-        return jsonify({"servers": [], "status": "MCP not yet connected"})
+        bridge = config.get("mcp_bridge")
+        if bridge is None:
+            return jsonify({"servers": [], "status": "MCP off"})
+        return jsonify({
+            "servers": bridge.manager.list_connections(),
+            "status": "ready" if bridge.ready.is_set() else "connecting",
+        })
 
     # ------------------------------------------------------------------
     # Plugins (placeholder)

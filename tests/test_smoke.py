@@ -161,7 +161,10 @@ def test_eject_poller_fires_when_usb_disappears(tmp_path, monkeypatch):
 def test_real_boot_plugin_and_mcp_steps_do_not_crash():
     import launcher
     assert isinstance(launcher._load_plugins(dry_run=False), list)
-    assert isinstance(launcher._init_mcp(PROJECT_ROOT / "config", dry_run=False), list)
+    bridge = launcher._init_mcp(PROJECT_ROOT / "config", dry_run=False)
+    if bridge is not None:                      # MCP on: connects in the background
+        assert bridge.ready.wait(30)
+        bridge.shutdown()
 
 
 def test_cleanup_only_targets_inference_servers_by_name():

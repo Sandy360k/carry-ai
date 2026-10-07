@@ -328,7 +328,7 @@ def boot(args: argparse.Namespace) -> None:
         decrypted_keys = _decrypt_keys(config_dir, args.dry_run)
 
     # --- Initialize MCP connections ---
-    mcp_tools = _init_mcp(config_dir, args.dry_run)
+    mcp_bridge = _init_mcp(config_dir, args.dry_run)
 
     # --- Load plugins ---
     plugin_tools = _load_plugins(args.dry_run)
@@ -351,7 +351,7 @@ def boot(args: argparse.Namespace) -> None:
         "model_path": str(selected_model) if selected_model else None,
         "model_tier": selected_tier,
         "api_keys": decrypted_keys,
-        "mcp_tools": mcp_tools,
+        "mcp_bridge": mcp_bridge,
         "plugin_tools": plugin_tools,
         "dry_run": args.dry_run,
         "port": args.port,
@@ -505,35 +505,26 @@ def _decrypt_keys(config_dir: Path, dry_run: bool) -> dict | None:
         return None
 
 
-def _init_mcp(config_dir: Path, dry_run: bool) -> list[dict]:
-    """Initialize MCP server connections."""
+def _init_mcp(config_dir: Path, dry_run: bool):
+    """Connect MCP servers (defaults for this OS + settings.json mcp.servers).
+
+    Connection runs in the background (mcp/bridge.py); tools reach the agent
+    as mcp__<server>__<tool> as soon as each server is up. Returns the
+    bridge (for status and shutdown), or None.
+    """
     if dry_run:
         log.info("[dry-run] Skipping MCP initialization.")
-        return []
-
+        return None
     try:
-        from mcp.config import McpServerConfig
-        from mcp.client import McpClient
-        from mcp.registry import McpToolRegistry
-
-        # Load MCP configs from settings
-        settings_file = config_dir / "settings.json"
-        if not settings_file.is_file():
-            log.info("No MCP servers configured (no settings.json).")
-            return []
-
-        # Placeholder: actual implementation will read and connect
-        log.info("MCP initialization — delegated to mcp/ package.")
-        return []
-    except NotImplementedError:
-        log.info("MCP client not yet implemented. Skipping.")
-        return []
-    except ImportError:
-        log.info("MCP dependencies not installed. Skipping.")
-        return []
+        from config.settings import load_settings
+        if not load_settings().to_dict().get("mcp", {}).get("auto_connect", True):
+            log.info("MCP auto_connect is off.")
+            return None
+        from mcp.bridge import start_mcp
+        return start_mcp(config_dir / "settings.json")
     except Exception as e:
         log.error("MCP initialization failed, continuing without MCP: %s", e)
-        return []
+        return None
 
 
 def _load_plugins(dry_run: bool) -> list[dict]:
@@ -626,6 +617,14 @@ def _shutdown(context: dict, agent_thread: threading.Thread | None,
               ui_thread: threading.Thread | None) -> None:
     """Graceful shutdown and cleanup."""
     print("\n  Shutting down carry-ai...")
+
+    # Stop MCP servers (the eject cleanup also kills any leftover children)
+    bridge = context.get("mcp_bridge")
+    if bridge is not None and not context.get("ejected"):
+        try:
+            bridge.shutdown()
+        except Exception as e:
+            log.debug("MCP shutdown: %s", e)
 
     # Attempt cleanup
     if not context.get("dry_run"):
