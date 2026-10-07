@@ -174,6 +174,23 @@ Place this file at `config/settings.json` on the USB drive (next to `carry-ai/`)
     // Example: ["my-plugin", "another-plugin"]
   },
 
+  "voice": {
+    // Push-to-talk (🎤 / Ctrl+M in the desktop app). Each direction:
+    // "auto" (offline model if downloaded, else cloud if its key is set),
+    // "offline" (sherpa-onnx on this PC), "cloud" (AssemblyAI / ElevenLabs), "off".
+    // Cloud keys are kept in providers.enc ("assemblyai", "elevenlabs"), not here.
+    "stt_backend": "auto",
+    "tts_backend": "auto",
+    "stt_model": "moonshine-tiny-en",   // or "moonshine-base-en"
+    "tts_model": "kitten-nano-en",      // or "kokoro-multi"
+    "tts_speaker": 0,                   // voice index (Kitten has 8: 0-7)
+    "tts_speed": 1.0,
+    "speak_replies": false,             // read agent replies aloud
+    "auto_send": true,                  // send the transcript without editing
+    "vision_enabled": false,            // attach a screenshot (terminal voice loop)
+    "max_recording_seconds": 60
+  },
+
   "cowork": {
     "sharing_enabled": false,
     // Enable session sharing (JSON/Markdown export and live LAN URL).

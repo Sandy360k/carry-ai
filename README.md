@@ -122,7 +122,7 @@ Mode is auto-detected from what's available, or forced with `--mode`.
 - **Offline-capable** — local GGUF inference via llama.cpp, 12 RAM tiers auto-selected
 - **5 cloud providers** — Anthropic, OpenAI, Google, Groq, OpenRouter (plus G0DM0D3 and Onyx behind the experimental flag)
 - **Automatic failover** — health-tracked provider chain with exponential backoff
-- **Voice mode** — push-to-talk → AssemblyAI transcription → Claude vision → ElevenLabs TTS
+- **Voice mode** — push-to-talk; speech-to-text and text-to-speech offline (sherpa-onnx) or in the cloud (AssemblyAI / ElevenLabs), switchable
 - **30+ agent tools** — shell, files, web scraping, screenshots, clipboard (Google Workspace behind the experimental flag)
 - **Persistent memory** — SQLite + FTS5, survives sessions, dedup + relevance decay
 - **MCP support** — connect any MCP server via stdio or Streamable HTTP (MCP 2026-07-28; legacy HTTP+SSE still works)
@@ -176,42 +176,23 @@ On a USB mounted `noexec` (common for Linux exFAT/FAT automounts), `start.sh` co
 
 ## Voice Mode
 
-Push-to-talk AI with screen awareness — ported from [farzaa/clicky](https://github.com/farzaa/clicky) (Swift/macOS) to Python:
+Push-to-talk, ported from [farzaa/clicky](https://github.com/farzaa/clicky): click **🎤** next to the message box (or press **Ctrl+M**), speak, click **■**. What you said is sent to the agent, and replies can be read aloud.
 
-```
-Hold Enter → speak → release Enter
-      │
-      ▼  AssemblyAI
-  transcript text
-      │
-      ├──► screenshot (base64 PNG) ──► Claude vision
-      │
-      ▼  Claude response
-  spoken aloud via ElevenLabs
-```
+Each direction can run **offline** (on this PC, nothing leaves it) or in the **cloud**, switchable in the app's **Voice** settings (Auto / Offline / Cloud / Off):
 
-**Setup** (the onboarding wizard does this for you):
-```bash
-pip install pyaudio assemblyai elevenlabs Pillow
-```
+| | Offline (sherpa-onnx, models on the USB) | Cloud (needs a key + internet) |
+|---|---|---|
+| Speech → text | Moonshine v2 tiny (44 MB) or base (141 MB), English | AssemblyAI |
+| Text → speech | KittenTTS nano (42 MB) or Kokoro (215 MB, multi-lingual) | ElevenLabs |
 
-**Keys needed:**
-- [AssemblyAI](https://assemblyai.com) — free 5 hours/month
-- [ElevenLabs](https://elevenlabs.io) — free 10,000 characters/month
+**Auto** (the default) uses the offline model when it's downloaded, otherwise the cloud service if you've added its key. Models are downloaded from the Voice settings, `onboard.py`, the flasher, or `python models/voice.py get moonshine-tiny-en`. They're pinned to a Hugging Face commit and checksum-verified, and stored in `models/voice/`.
 
-**Enable in `config/settings.json`:**
-```json
-{
-  "voice": {
-    "enabled": true,
-    "assemblyai_key": "your-key",
-    "elevenlabs_key": "your-key",
-    "vision_enabled": true
-  }
-}
-```
+- **Recording:** PyAudio on Windows (bundled). On Linux it uses sherpa-onnx's own ALSA reader, so no PortAudio is needed.
+- **Playback:** PyAudio, or Windows' built-in `winsound` / Linux `aplay` (or `paplay`). Audio is played from memory and never written to the host's disk.
+- **Offline transcription** reads audio straight from memory. Cloud transcription writes a WAV to the session folder and deletes it right after upload.
+- **Cloud keys** (AssemblyAI, ElevenLabs) go into the encrypted keystore, never `settings.json`.
 
-All voice dependencies are optional — carry-ai runs fully without them. Implementation: [`integrations/voice_tools.py`](integrations/voice_tools.py).
+Implementation: [`integrations/voice_tools.py`](integrations/voice_tools.py), [`ui/voice_ui.py`](ui/voice_ui.py), [`models/voice.py`](models/voice.py).
 
 ---
 
@@ -311,7 +292,6 @@ ReAct-pattern agent loop (Observe → Think → Act → Observe) with 30+ tools:
 | **Web** | `web_fetch`, `browse`, `scrape`, `scrape_stealth` (Scrapling-enhanced) |
 | **Google** | `gdrive_list/upload`, `gmail_search/send/read`, `gsheets_read/append`, `gcalendar_agenda/create` |
 | **Memory** | `memory_store`, `memory_search`, `memory_list` |
-| **Voice** | `voice_listen`, `voice_speak` (when voice mode enabled) |
 
 **Permission modes:**
 
@@ -574,7 +554,7 @@ carry-ai/
 │   └── app.py               # Flask SPA at localhost:8080
 
 ├── integrations/
-│   ├── voice_tools.py       # Push-to-talk voice pipeline (clicky port)
+│   ├── voice_tools.py       # Push-to-talk voice: offline (sherpa-onnx) or cloud STT/TTS
 │   ├── scrapling_tools.py   # Adaptive web scraping
 │   ├── gworkspace_tools.py  # Google Workspace API
 │   └── llmfit_advisor.py    # Hardware-aware model selection
@@ -611,7 +591,7 @@ carry-ai/
 - Python 3.10+
 - For local mode: [llama-server](https://github.com/ggerganov/llama.cpp) binary + a GGUF model file
 - For API mode: at least one provider API key
-- For voice mode: `pip install pyaudio assemblyai elevenlabs Pillow`
+- For voice mode: `pip install sherpa-onnx` (+ `pyaudio` on Windows), then download the voice models in the app
 
 ```bash
 pip install -r requirements.txt        # Full install

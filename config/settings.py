@@ -87,6 +87,23 @@ DEFAULTS = {
         "oauth_client_id": "",
     },
 
+    # Voice (integrations/voice_tools.py). Each direction is "auto" (offline
+    # sherpa-onnx model if downloaded, else the cloud service if its key is
+    # in the keystore), "offline", "cloud" or "off". Cloud keys (AssemblyAI,
+    # ElevenLabs) live in providers.enc, never here.
+    "voice": {
+        "stt_backend": "auto",
+        "tts_backend": "auto",
+        "stt_model": "moonshine-tiny-en",   # models/voice.py ids
+        "tts_model": "kitten-nano-en",
+        "tts_speaker": 0,
+        "tts_speed": 1.0,
+        "speak_replies": False,             # read agent replies aloud
+        "auto_send": True,                  # send the transcript right away
+        "vision_enabled": False,            # attach a screenshot (terminal loop)
+        "max_recording_seconds": 60,
+    },
+
     # Peripheral features, off by default. They don't fit the disposable,
     # offline-first USB session (extra services, host installs, or shared
     # state) and are opt-in. Enable in settings.json, e.g.
@@ -327,6 +344,28 @@ def get_default_settings() -> dict:
 def load_settings(usb_root: str = None, cli_overrides: dict = None) -> Settings:
     """Convenience wrapper for Settings.load()."""
     return Settings.load(usb_root=usb_root, cli_overrides=cli_overrides)
+
+
+def save_user_settings(patch: dict, usb_root: str = None) -> str:
+    """Merge *patch* into config/settings.json (created if missing).
+
+    Only the user's own overrides are stored, not the full defaults.
+    Returns the path written.
+    """
+    base = Path(usb_root) / "config" if usb_root else Path(__file__).parent
+    path = base / "settings.json"
+    current = {}
+    if path.is_file():
+        try:
+            current = json.loads(path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError) as e:
+            logger.warning("Rewriting unreadable %s: %s", path, e)
+    merged = _deep_merge(current, patch)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(merged, indent=2), encoding="utf-8")
+    os.replace(tmp, path)
+    return str(path)
 
 
 def is_experimental_enabled(feature: str, usb_root: str = None) -> bool:

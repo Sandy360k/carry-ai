@@ -58,6 +58,7 @@ carry-ai/
 ├── ui/
 │   ├── app.py               # Flask SPA at localhost:8080 (token + Host guard, HTML/CSS/JS embedded)
 │   ├── browser.py           # Opens the web UI in an isolated app window (throwaway profile)
+│   ├── voice_ui.py          # Desktop voice: 🎤 push-to-talk controller + Voice settings dialog
 │   └── desktop.py           # Native desktop chat app — drives the same Agent as the web UI (customtkinter/tkinter), run by launcher.py
 
 ├── mcp/
@@ -89,6 +90,7 @@ carry-ai/
 ├── models/
 │   ├── catalog.py           # Local model catalogue — single source of truth for RAM tiers
 │   ├── registry.py          # Downloaded-model registry (verify, active model)
+│   ├── voice.py             # Offline voice models (sherpa-onnx): pinned catalogue + downloader
 │   └── downloader.py        # HuggingFace GGUF browser & downloader
 
 ├── crypto/
@@ -328,22 +330,17 @@ When making changes, use `python launcher.py --dry-run --verbose` to validate th
 
 ## Voice Pipeline (`integrations/voice_tools.py`)
 
-Inspired by [farzaa/clicky](https://github.com/farzaa/clicky) — a push-to-talk macOS AI assistant. The Python port provides the same pipeline:
+Inspired by [farzaa/clicky](https://github.com/farzaa/clicky). Push-to-talk → speech-to-text → agent → text-to-speech, with each direction switchable between **offline** and **cloud**:
 
-**Flow**: Push-to-talk recording → AssemblyAI transcription → screenshot (base64) → Claude vision → ElevenLabs TTS playback
-
-**Key classes**:
-- `VoiceConfig` — dataclass: keys, voice_id, vision_enabled, max_recording_seconds
-- `AudioRecorder` — PyAudio recording on a daemon thread; main thread blocks on `input()` for PTT
-- `Transcriber` — AssemblyAI REST (upload → submit → poll); falls back to placeholder string if unavailable
-- `ScreenCapture` — `PIL.ImageGrab` → `pyautogui.screenshot()` fallback, returns base64 PNG
-- `TTSPlayer` — ElevenLabs SDK → REST streaming fallback → silent no-op
-- `VoicePipeline` — chains all four; `run_loop()` for continuous PTT session
-- `is_voice_available()` — returns per-component availability dict for graceful degradation
-
-All optional deps (pyaudio, assemblyai, elevenlabs, PIL) are guarded with try/except. The pipeline silently degrades when packages or keys are absent.
-
-**Activation**: Set `voice.enabled = true` in `config/settings.json` or use the `onboard.py` Voice Setup step.
+- `voice.stt_backend` / `voice.tts_backend` = `"auto" | "offline" | "cloud" | "off"`. `resolve_backend()` decides: auto means offline if sherpa-onnx and the model are present, else cloud if its key is set, else off. `backend_problem()` returns the user-facing reason a choice can't run. `make_transcriber()` / `make_tts()` build the backend.
+- **Offline:** `OfflineTranscriber` (sherpa-onnx Moonshine v2) and `OfflineTTS` (Kitten / Kokoro). Models come from `models/voice.py`, a catalogue pinned to HF commits with an LFS-SHA-256-verified, resumable, parallel downloader, stored in `models/voice/<id>/`.
+- **Cloud:** `Transcriber` (AssemblyAI REST) and `TTSPlayer` (ElevenLabs SDK 2.x, REST fallback). Keys come from the keystore entries `assemblyai` / `elevenlabs` via `load_voice_config(api_keys)`, never from settings.json.
+- **Audio I/O:**
+  - `AudioRecorder.start()/stop()` (GUI) or `record_until_keypress()` (terminal) uses PyAudio, else sherpa-onnx `Alsa` on Linux. PyAudio has no Linux wheel; `portable/runtime.ONLY_ON` installs it for Windows only.
+  - `play_pcm()` uses PyAudio, else in-memory `winsound` (Windows) or `aplay`/`paplay` on stdin (Linux).
+  - Audio is never written to host disk. The only file is the cloud-STT WAV, which goes in the session dir and is deleted after upload.
+- **Desktop:** `ui/voice_ui.py` provides `VoiceController` (the 🎤 button / Ctrl+M, speak-replies) and `VoiceSettingsDialog`. Esc stops speech.
+- All optional deps (sherpa_onnx, pyaudio, elevenlabs, PIL) are guarded. Never make them required.
 
 ---
 
@@ -412,7 +409,7 @@ USB_ROOT/
 5. **Optional imports** — Many integrations are optional. Always guard third-party imports with try/except; never make optional deps required without updating `requirements.txt`.
 6. **Provider additions** — New providers must extend `BaseProvider`, handle all three exception types, and be registered in `modes/api_mode.py`. Implement `_fetch_model_ids()` / `_fallback_models()` so `models()` discovers live IDs and `resolve_model()` can replace retired ones; hardcoded lists are only the offline fallback.
 7. **Tool additions** — Register via `register_tool()` in `agent/tools.py`; keep `execute_fn` side-effect-safe when `permission_mode == "safe"`.
-8. **Voice pipeline** — `integrations/voice_tools.py` is fully optional; all four deps (pyaudio, assemblyai, elevenlabs, Pillow) are guarded. Never make them required.
+8. **Voice pipeline** — `integrations/voice_tools.py` is fully optional; its deps (sherpa-onnx, pyaudio, elevenlabs, Pillow) are guarded. Never make them required. Voice models are data in `models/voice/`; `update_usb.py` syncs code in `models/` but never model data (`_is_model_data`), and the flasher keeps it on re-flash.
 9. **Onboarding** — `onboard.py` uses `rich` for the visual experience but has a complete plain-text fallback; it must run with only stdlib if rich is not yet installed.
 10. **USB self-hosting** — `flash_usb.py` and `setup_usb.py` install packages with `pip install --target` into the USB. `bootstrap.py` injects that directory via `sys.path.insert(0, ...)`. Never assume host site-packages are available; all imports that aren't stdlib should be guarded with try/except.
 11. **Bundled runtimes** — `portable/runtime.py` is the single source of truth for the Python and llama.cpp builds carried on the USB (pinned versions + SHA-256; `flash_usb.py`, `setup_usb.py` and `update_usb.py` all call it). Python comes from astral-sh/python-build-standalone, not the python.org embeddable zip. Bump `PYTHON_VERSION`/`PYTHON_RELEASE`/`LLAMA_BUILD` and their hashes together. Extraction must stay symlink-free (USB = exFAT/FAT32); packages are cross-installed for the bundled interpreter via `--platform`/`--python-version`, never the host's.

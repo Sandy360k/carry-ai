@@ -107,6 +107,13 @@ SOURCE_ONLY: dict[str, dict[str, list[str]]] = {
     },
 }
 
+# Packages that only have wheels for some OSes. PyAudio has no Linux wheel
+# (it needs the PortAudio dev headers); on Linux the voice pipeline records
+# through sherpa-onnx's own ALSA reader and plays through aplay instead.
+ONLY_ON: dict[str, set[str]] = {
+    "pyaudio": {"windows"},
+}
+
 
 # ===================================================================
 # USB layout
@@ -381,6 +388,8 @@ def install_packages(packages: list[str], usb_root: Path, os_name: str,
     failed = []
     for pkg in packages:
         name = re.split(r"[<>=!~\[ ]", pkg, maxsplit=1)[0].strip()
+        if os_name not in ONLY_ON.get(name.lower(), {os_name}):
+            continue
         if name.lower() in SOURCE_ONLY:
             deps = SOURCE_ONLY[name.lower()][os_name]
             cmd = pip_install_command([pkg, *deps], target, os_name, source_build=True)

@@ -11,6 +11,7 @@ python-env/
 # GGUF model files and registry state (USB-resident data, not source)
 models/*.gguf
 models/registry.json
+models/voice/
 
 # User secrets & local config
 config/providers.enc
