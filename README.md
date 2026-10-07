@@ -286,6 +286,10 @@ python models/downloader.py local                # List downloaded models
 
 Dual backend (huggingface_hub or pure requests), resume support, quantization-aware sorting.
 
+**In the desktop app** the Model Manager labels every file with whether it fits this PC (free RAM + dedicated VRAM, including the KV cache) and warns before downloading one that doesn't.
+
+**Gated models (Gemma, Llama…)** — click **Sign in with Hugging Face** in the Model Manager. It shows a short code and a QR code; approve it on your phone and the token lands in the app (optionally saved, encrypted, in `providers.enc`). No browser opens on the host PC. If a model still needs its licence accepted, the app shows the model page as a QR code to agree on your phone, then **Check again** starts the download. This needs a one-time public OAuth app — set its id in `huggingface.oauth_client_id` (see [docs/configuration.md](docs/configuration.md)). Pasting a token still works without it.
+
 ---
 
 ## Agent & Tools

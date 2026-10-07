@@ -1097,10 +1097,14 @@ class ModelManagerWindow:
                                      insertbackground=self.C["fg"],
                                      font=(FONT_FAMILY, 10), relief="flat")
         self._token_entry.pack(side="left", padx=4, pady=6)
-        self._token_entry.insert(0, os.environ.get("HF_TOKEN", ""))
-        tk.Label(tf, text="huggingface.co/settings/tokens",
-                 font=(FONT_FAMILY, 9), fg=self.C["fg3"],
-                 bg=self.C["bg3"]).pack(side="left", padx=8)
+        self._token_entry.insert(0, ChatBackend.preloaded_keys.get("huggingface")
+                                 or os.environ.get("HF_TOKEN", ""))
+        tk.Button(tf, text="Sign in with Hugging Face", command=self._sign_in_hf,
+                  bg=self.C["accent2"], fg="#111", font=(FONT_FAMILY, 9, "bold"),
+                  relief="flat", cursor="hand2").pack(side="left", padx=8, pady=4)
+        self._hf_status = tk.Label(tf, text="", font=(FONT_FAMILY, 9),
+                                   fg=self.C["fg3"], bg=self.C["bg3"])
+        self._hf_status.pack(side="left", padx=4)
 
         # ── Tab bar ─────────────────────────────────────────────────────────
         tab_bar = tk.Frame(self._win, bg=self.C["bg3"], height=36)
@@ -1530,6 +1534,76 @@ class ModelManagerWindow:
             self._dl_info_lbl.config(text=f"{fname}  ({size_gb:.2f} GB)")
             self._dl_btn.config(state="normal")
 
+    # ── Hugging Face sign-in ──────────────────────────────────────────────
+
+    def _sign_in_hf(self, on_done=None):
+        """Device-code sign-in: the user approves on their phone, no browser
+        is opened on this PC."""
+        from models.hf_auth import configured_client_id
+        client_id = configured_client_id()
+        if not client_id:
+            from tkinter import messagebox
+            messagebox.showinfo(
+                "Set up Hugging Face sign-in",
+                "Sign-in needs a carry-ai app registered on Hugging Face (once):\n\n"
+                "1. huggingface.co/settings/applications/new\n"
+                "2. Public app (no secret), scope: gated-repos\n"
+                "3. Put its Client ID in config/settings.json:\n"
+                '   {"huggingface": {"oauth_client_id": "..."}}\n\n'
+                "Until then you can paste an access token in the field.",
+                parent=self._win)
+            return
+        HfSignInDialog(self, client_id, on_done=on_done)
+
+    def _on_hf_signed_in(self, token: str, username: str):
+        """Token arrives from the sign-in dialog (on the Tk thread)."""
+        self._token_entry.delete(0, "end")
+        self._token_entry.insert(0, token)
+        ChatBackend.preloaded_keys["huggingface"] = token   # this session, RAM only
+        self._hf_status.config(text=f"Signed in as {username}" if username else "Signed in")
+        from tkinter import messagebox
+        if messagebox.askyesno(
+                "Remember sign-in?",
+                "Save this Hugging Face token in the encrypted keystore on the "
+                "USB, so you don't need to sign in next time?\n\n"
+                "(It never touches this PC's disk either way.)", parent=self._win):
+            self._save_hf_token(token)
+
+    def _save_hf_token(self, token: str):
+        from tkinter import messagebox, simpledialog
+        from crypto.keystore import KeyStore
+        enc = PROJECT_ROOT / "config" / "providers.enc"
+        try:
+            text = enc.read_text(encoding="utf-8").strip() if enc.is_file() else ""
+        except OSError:
+            text = ""
+        existing = bool(text) and not text.startswith("#")
+        prompt = ("Keystore passphrase:" if existing
+                  else "Choose a passphrase for the new keystore:")
+        pw = simpledialog.askstring("Encrypted keystore", prompt, show="*", parent=self._win)
+        if not pw:
+            return
+        if not existing:
+            again = simpledialog.askstring("Encrypted keystore", "Repeat the passphrase:",
+                                           show="*", parent=self._win)
+            if again != pw:
+                messagebox.showerror("Keystore", "Passphrases didn't match.", parent=self._win)
+                return
+        ks = KeyStore(enc_path=str(enc))
+        try:
+            if existing:
+                ks.unlock(pw)
+            else:
+                ks.init_new(pw)
+            ks.add("huggingface", "api_key", token)
+            messagebox.showinfo("Keystore", "Saved (encrypted, on the USB).", parent=self._win)
+        except ValueError:
+            messagebox.showerror("Keystore", "Wrong passphrase — not saved.", parent=self._win)
+        except Exception as e:
+            messagebox.showerror("Keystore", f"Could not save: {e}", parent=self._win)
+        finally:
+            ks.lock()
+
     def _fit(self, size_gb: float):
         """Fit estimate against this PC's free RAM + dedicated VRAM."""
         from models.fit import estimate_fit
@@ -1595,6 +1669,20 @@ class ModelManagerWindow:
         url = f"https://huggingface.co/{model['hf_repo']}/resolve/main/{filename}"
         display_name = model.get("name", filename)
 
+        # Gated repo? Find out before downloading, so the user gets the
+        # sign-in / accept-licence dialog instead of a bare 401.
+        try:
+            from models.hf_auth import check_access, gating_mode
+            access = check_access(model["hf_repo"], filename, hf_token or None)
+            if access in ("auth_required", "no_access"):
+                self._dl_result = ("gated", {
+                    "model": model, "access": access,
+                    "mode": gating_mode(model["hf_repo"], hf_token or None),
+                })
+                return
+        except Exception as e:
+            log.debug("Access pre-check skipped: %s", e)
+
         def _attempt(retry: bool = False) -> bool:
             try:
                 # Resume support: check existing partial file
@@ -1655,10 +1743,9 @@ class ModelManagerWindow:
                     dest.unlink(missing_ok=True)
                 if e.code == 401:
                     self._dl_result = ("error",
-                        f"401 Unauthorized — HF token required for '{display_name}'.\n"
-                        f"  1. huggingface.co/settings/tokens → create a token\n"
-                        f"  2. Accept license: huggingface.co/{model.get('hf_repo','')}\n"
-                        f"  3. Paste your token in the HF Token field above")
+                        f"401 Unauthorized — '{display_name}' needs Hugging Face access.\n"
+                        f"  Use 'Sign in with Hugging Face' above, then accept the\n"
+                        f"  licence at huggingface.co/{model.get('hf_repo','')} (phone is fine)")
                     return True
                 elif e.code in (500, 502, 503, 504) and not retry:
                     self._dl_status = f"Server error {e.code}, retrying in 5 s…"
@@ -1680,6 +1767,10 @@ class ModelManagerWindow:
         if self._dl_result:
             status, msg = self._dl_result
             self._dl_result = None
+            if status == "gated":
+                self._progress_lbl.config(text="This model is gated — see the dialog.")
+                GatedModelDialog(self, **msg)
+                return
             self._progress_bar_var.set(100 if status == "ok" else 0)
             # Show only first line to fit label
             self._progress_lbl.config(text=msg.splitlines()[0])
@@ -1692,6 +1783,206 @@ class ModelManagerWindow:
         if self._dl_status:
             self._progress_lbl.config(text=self._dl_status)
         self._win.after(100, self._poll_download)
+
+
+# ---------------------------------------------------------------------------
+# Hugging Face sign-in / gated-model dialogs (no browser on this PC)
+# ---------------------------------------------------------------------------
+try:
+    import qrcode as _qrcode          # optional, pure Python
+except ImportError:
+    _qrcode = None
+
+
+def qr_canvas(parent, text: str, px: int = 200):
+    """A Tk canvas showing *text* as a QR code, or None without `qrcode`.
+
+    Drawn as rectangles on a white canvas, so no Pillow is needed and it
+    scans fine on the dark theme.
+    """
+    if _qrcode is None:
+        return None
+    qr = _qrcode.QRCode(border=2, error_correction=_qrcode.constants.ERROR_CORRECT_M)
+    qr.add_data(text)
+    qr.make(fit=True)
+    matrix = qr.get_matrix()
+    n = len(matrix)
+    cell = max(2, px // n)
+    c = tk.Canvas(parent, width=n * cell, height=n * cell, bg="white",
+                  highlightthickness=0)
+    for y, row in enumerate(matrix):
+        for x, on in enumerate(row):
+            if on:
+                c.create_rectangle(x * cell, y * cell, (x + 1) * cell, (y + 1) * cell,
+                                   fill="black", outline="")
+    return c
+
+
+class HfSignInDialog:
+    """Shows a device code + QR; polls Hugging Face until the user approves
+    on their phone, then hands the token to the Model Manager."""
+
+    def __init__(self, manager, client_id: str, on_done=None):
+        self._mgr = manager
+        self._client_id = client_id
+        self._on_done = on_done
+        self._cancel = threading.Event()
+        self._result = None             # ("code", DeviceCode) | ("token", ...) | ("error", msg)
+        C = manager.C
+
+        self._win = tk.Toplevel(manager._win)
+        self._win.title("Sign in with Hugging Face")
+        self._win.configure(bg=C["bg"])
+        self._win.transient(manager._win)
+        self._win.protocol("WM_DELETE_WINDOW", self._close)
+
+        tk.Label(self._win, text="Sign in with Hugging Face", font=(FONT_FAMILY, 14, "bold"),
+                 fg=C["fg"], bg=C["bg"]).pack(padx=24, pady=(18, 4))
+        tk.Label(self._win, text="On your phone (or any device), open the link and enter the code.\n"
+                                 "Nothing is opened on this PC.",
+                 font=(FONT_FAMILY, 10), fg=C["fg2"], bg=C["bg"], justify="center").pack(padx=24)
+        self._qr_holder = tk.Frame(self._win, bg=C["bg"])
+        self._qr_holder.pack(pady=10)
+        self._code_lbl = tk.Label(self._win, text="…", font=(MONO_FAMILY, 26, "bold"),
+                                  fg=C["accent"], bg=C["bg"])
+        self._code_lbl.pack()
+        self._link_lbl = tk.Label(self._win, text="", font=(MONO_FAMILY, 10),
+                                  fg=C["fg2"], bg=C["bg"])
+        self._link_lbl.pack(pady=(2, 8))
+        self._status = tk.Label(self._win, text="Requesting a code…", font=(FONT_FAMILY, 10),
+                                fg=C["fg3"], bg=C["bg"])
+        self._status.pack(pady=(0, 8))
+        tk.Button(self._win, text="Cancel", command=self._close, relief="flat",
+                  bg=C["bg3"], fg=C["fg"]).pack(pady=(0, 16))
+
+        threading.Thread(target=self._worker, daemon=True).start()
+        self._poll()
+
+    def _worker(self):
+        from models.hf_auth import HfAuthError, poll_for_token, start_device_flow, whoami
+        try:
+            code = start_device_flow(self._client_id)
+            self._result = ("code", code)
+            token = poll_for_token(self._client_id, code, cancel=self._cancel)
+            self._result = ("token", (token.access_token, whoami(token.access_token)))
+        except HfAuthError as e:
+            self._result = ("error", str(e))
+        except Exception as e:
+            self._result = ("error", f"Sign-in failed: {e}")
+
+    def _poll(self):
+        if not self._win.winfo_exists():
+            return
+        result, self._result = self._result, None
+        if result:
+            kind, data = result
+            if kind == "code":
+                self._code_lbl.config(text=data.user_code)
+                self._link_lbl.config(text=data.verification_uri)
+                qr = qr_canvas(self._qr_holder, data.link)
+                if qr is not None:
+                    qr.pack()
+                self._status.config(text="Waiting for you to approve on Hugging Face…")
+            elif kind == "token":
+                token, user = data
+                self._win.destroy()
+                self._mgr._on_hf_signed_in(token, user)
+                if self._on_done:
+                    self._on_done(token)
+                return
+            elif kind == "error":
+                self._status.config(text=data, fg="#e5534b")
+                return
+        self._win.after(250, self._poll)
+
+    def _close(self):
+        self._cancel.set()
+        self._win.destroy()
+
+
+class GatedModelDialog:
+    """Explains a gated model and gets the user through it without a
+    browser on this PC: sign in (device code) and/or accept the licence on
+    the model page via a QR code, then re-check and resume the download."""
+
+    def __init__(self, manager, model: dict, access: str, mode: str = ""):
+        from models.hf_auth import repo_page_url
+        self._mgr = manager
+        self._model = model
+        C = manager.C
+        repo = model["hf_repo"]
+        page = repo_page_url(repo)
+
+        self._win = tk.Toplevel(manager._win)
+        self._win.title("Gated model")
+        self._win.configure(bg=C["bg"])
+        self._win.transient(manager._win)
+
+        tk.Label(self._win, text=f"{repo} is gated", font=(FONT_FAMILY, 13, "bold"),
+                 fg=C["fg"], bg=C["bg"]).pack(padx=24, pady=(18, 6))
+        if access == "auth_required":
+            text = ("Its authors ask you to accept their licence first, which needs "
+                    "a Hugging Face account.\n\n1. Sign in (on your phone).\n"
+                    "2. Accept the licence on the model page (scan the code).\n"
+                    "3. Press Check again.")
+        else:
+            approval = ("Approval is automatic — access is instant after you agree."
+                        if mode == "auto" else
+                        "The authors approve requests by hand — this can take hours or days."
+                        if mode == "manual" else "")
+            text = ("Your account doesn't have access yet. Scan the code to open the "
+                    "model page on your phone and tap Agree.\n" + approval +
+                    "\n\nHugging Face only accepts licences on its website, so this step "
+                    "can't happen inside carry-ai.")
+        tk.Label(self._win, text=text, font=(FONT_FAMILY, 10), fg=C["fg2"], bg=C["bg"],
+                 justify="left", wraplength=420).pack(padx=24)
+
+        qr = qr_canvas(self._win, page)
+        if qr is not None:
+            qr.pack(pady=10)
+        tk.Label(self._win, text=page, font=(MONO_FAMILY, 10), fg=C["fg2"],
+                 bg=C["bg"]).pack(pady=(0, 6))
+        self._status = tk.Label(self._win, text="", font=(FONT_FAMILY, 10),
+                                fg=C["fg3"], bg=C["bg"])
+        self._status.pack()
+
+        row = tk.Frame(self._win, bg=C["bg"])
+        row.pack(pady=(8, 16))
+        if access == "auth_required":
+            tk.Button(row, text="Sign in", relief="flat", bg=C["accent2"], fg="#111",
+                      command=lambda: manager._sign_in_hf(on_done=lambda _t: self._recheck())
+                      ).pack(side="left", padx=4)
+        tk.Button(row, text="Check again", relief="flat", bg=C["accent"], fg="#111",
+                  command=self._recheck).pack(side="left", padx=4)
+        tk.Button(row, text="Close", relief="flat", bg=C["bg3"], fg=C["fg"],
+                  command=self._win.destroy).pack(side="left", padx=4)
+
+    def _recheck(self):
+        if not self._win.winfo_exists():
+            return
+        token = self._mgr._token_entry.get().strip() or None
+        self._status.config(text="Checking…")
+        box = {}
+
+        def _worker():
+            from models.hf_auth import check_access
+            box["access"] = check_access(self._model["hf_repo"], self._model["hf_file"], token)
+        threading.Thread(target=_worker, daemon=True).start()
+
+        def _wait():
+            if "access" not in box:
+                self._win.after(200, _wait)
+                return
+            if box["access"] == "ok":
+                self._win.destroy()
+                self._mgr._start_download(self._model)
+            elif box["access"] == "auth_required":
+                self._status.config(text="Not signed in yet.")
+            elif box["access"] == "no_access":
+                self._status.config(text="No access yet — accept the licence, or wait for approval.")
+            else:
+                self._status.config(text="Couldn't reach Hugging Face — try again.")
+        _wait()
 
 
 # ---------------------------------------------------------------------------

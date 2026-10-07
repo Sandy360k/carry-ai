@@ -218,10 +218,12 @@ def load_providers(decrypted_keys: dict) -> dict[str, BaseProvider]:
     # Peripheral providers are opt-in (see config experimental.*); skip
     # them even if a key happens to be present, unless explicitly enabled.
     experimental = {"godmode", "onyx"}
+    # Credentials kept in the same keystore that are not chat providers.
+    not_providers = {"huggingface", "assemblyai", "elevenlabs"}
 
     for name, keys in decrypted_keys.items():
-        if name.startswith("_"):
-            continue  # Skip internal keys like _dry_run
+        if name.startswith("_") or name in not_providers:
+            continue  # Internal keys (_dry_run) and non-LLM credentials
         if not isinstance(keys, dict):
             log.debug("Skipping non-dict key entry: %s", name)
             continue

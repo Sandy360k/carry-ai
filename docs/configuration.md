@@ -181,6 +181,16 @@ Place this file at `config/settings.json` on the USB drive (next to `carry-ai/`)
     // How long a shared session URL stays active (minutes).
   },
 
+  "huggingface": {
+    "oauth_client_id": ""
+    // Client id of a *public* Hugging Face OAuth app (no secret, scope
+    // "gated-repos"), registered once at
+    // https://huggingface.co/settings/applications/new.
+    // Enables "Sign in with Hugging Face" in the Model Manager: the user
+    // approves a short code on their phone, no browser opens on this PC.
+    // Empty = the button explains how to set it up; pasting a token works.
+  },
+
   "experimental": {
     // Peripheral features, off by default. They don't fit the disposable,
     // offline-first USB session, so they're opt-in.

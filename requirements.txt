@@ -98,3 +98,5 @@ rich>=13.7.0                 # Rich terminal output for onboard.py (colored pane
 # ---------------------------------------------------------------------------
 customtkinter>=5.2.0         # Modern-looking tkinter wrapper for ui/desktop.py
                              # (falls back to plain tkinter if not installed)
+qrcode>=7.4                  # QR codes in the Hugging Face sign-in / gated-model dialogs
+                             # (pure Python; the dialogs show the link as text without it)

@@ -79,6 +79,14 @@ DEFAULTS = {
         "session_ttl_minutes": 60,
     },
 
+    # Hugging Face sign-in (models/hf_auth.py). oauth_client_id is the id of
+    # a *public* OAuth app (no secret, scope "gated-repos") registered once
+    # at https://huggingface.co/settings/applications/new. Empty = the
+    # "Sign in" button explains how to set it up; pasting a token still works.
+    "huggingface": {
+        "oauth_client_id": "",
+    },
+
     # Peripheral features, off by default. They don't fit the disposable,
     # offline-first USB session (extra services, host installs, or shared
     # state) and are opt-in. Enable in settings.json, e.g.
