@@ -217,17 +217,23 @@ All voice dependencies are optional — carry-ai runs fully without them. Implem
 
 ## API Providers
 
-Seven providers with automatic failover and per-session health tracking (success rate, latency, consecutive failures):
+Ten cloud providers with automatic failover and per-session health tracking (success rate, latency, consecutive failures). Add keys in the desktop app with **API Keys** (or in `onboard.py`): each provider has a **Get key** button (QR code for your phone, or a throwaway private window) and a **Test** button. Keys stay in RAM unless you choose **Save & remember** (encrypted into `providers.enc` on the USB). Keys already in the environment (`OPENROUTER_API_KEY`, `GROQ_API_KEY`, …) are offered as "(detected)".
 
-| Provider | Models | Auth |
-|----------|--------|------|
-| **Anthropic** | Claude Opus 5, Sonnet 5, Haiku 4.5, Fable 5.1 | API key |
-| **OpenAI** | GPT-6 Luna / Sol / Astra, GPT-5.6 | API key |
-| **Google** | Gemini 3.8 Flash, 3.5 Flash-Lite, 3.1 Pro | API key or OAuth |
-| **Groq** | gpt-oss 20B / 120B, Qwen3.8 27B (vision) | API key |
-| **OpenRouter** | 450+ models incl. free ones (`openrouter/free`) | API key |
-| **G0DM0D3** ⚑ | ULTRAPLINIAN racing, CONSORTIUM synthesis, AutoTune | API key |
-| **Onyx** ⚑ | RAG-enhanced (50+ data connectors) | API key + Onyx instance |
+**Free to start — no credit card:**
+
+| Provider | Good free models | Free limits (Oct 2026, approx.) |
+|----------|------------------|------------------|
+| **OpenRouter** | `openrouter/free` (auto-picks a free model with tool support), Gemma 4 31B, Nemotron 3 Super | ~50 req/day (1000/day after a one-time $10 top-up) |
+| **Groq** | gpt-oss 20B / 120B, Llama 3.3 70B | ~1000 req/day per model |
+| **Google Gemini** | Gemini 3.5 Flash-Lite, 3.8 Flash | a few hundred req/day on Flash-Lite |
+| **Cerebras** | gpt-oss 120B | ~1M tokens/day |
+| **Mistral** | Mistral Small / Medium | "Experiment" plan (phone verification, prompts used for training) |
+| **NVIDIA NIM** | gpt-oss 20B, Nemotron 3 Super | ~40 req/min |
+
+**Paid:** Anthropic (Claude Opus 5 / Sonnet 5 / Haiku 4.5), OpenAI (GPT-6), DeepSeek, xAI (Grok).
+**Experimental:** G0DM0D3 ⚑ (multi-model racing), Onyx ⚑ (RAG over 50+ connectors).
+
+The list lives in `providers/catalog.py`; the providers there that speak the plain OpenAI API share `providers/generic_provider.py`.
 
 ⚑ Experimental — off by default (needs an extra self-hosted service). Enable with `{"experimental": {"godmode": true}}` / `{"onyx": true}` in `config/settings.json`.
 

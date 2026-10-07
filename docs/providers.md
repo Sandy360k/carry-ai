@@ -1,8 +1,32 @@
 # API Provider Setup
 
-carry-ai supports 7 LLM providers plus 2 voice service integrations. All chat providers participate in an automatic failover chain: if your primary provider returns a rate-limit, auth error, or overload response, carry-ai tries the next healthy provider in the chain without interrupting your conversation.
+carry-ai supports 12 LLM providers (10 in the catalogue `providers/catalog.py` plus the experimental G0DM0D3 and Onyx) and 2 voice service integrations. All chat providers participate in an automatic failover chain: if your primary provider returns a rate-limit, auth error, or overload response, carry-ai tries the next healthy provider in the chain without interrupting your conversation.
 
 Provider health is tracked per-session (success rate, average latency, consecutive failures). Providers with auth errors are skipped immediately; providers that are rate-limited are retried with exponential backoff before falling back.
+
+### Adding keys in the app
+
+The desktop app's **API Keys** window (and `onboard.py`) list every provider in `providers/catalog.py`, free-to-start ones first. For each one:
+
+- **Get key** shows the provider's key page as a QR code to open on your phone, a **Copy link** button (the clipboard is wiped on eject), or opens it in a throwaway private browser window. The host's own browser is never used.
+- **Test** makes one cheap authenticated call: `GET /models` for most providers, `GET /api/v1/key` for OpenRouter (its model list is public), `GET /v1/models` with `x-api-key` for Anthropic, and a 16-token chat request for NVIDIA. A 429 or 402 response still means the key is valid.
+- Pasted keys are cleaned up (`export FOO="…";` → `…`). Keys found in the environment are offered as "(detected)".
+- **Use this session** keeps keys in RAM only. **Save & remember** encrypts them into `config/providers.enc`.
+
+New keys take effect immediately. A local-only session becomes hybrid: the local model stays available as "Local (llama.cpp)" next to the cloud providers.
+
+### Free-tier providers (no credit card)
+
+| Provider | Base URL | Key page | Notes |
+|---|---|---|---|
+| OpenRouter | `https://openrouter.ai/api/v1` | https://openrouter.ai/settings/keys | `openrouter/free` routes to a free model with tool support; ~50 req/day |
+| Groq | `https://api.groq.com/openai/v1` | https://console.groq.com/keys | ~1000 req/day per model |
+| Google Gemini | native API (`providers/google_oauth.py`) | https://aistudio.google.com/apikey | free-tier prompts may be used for training |
+| Cerebras | `https://api.cerebras.ai/v1` | https://cloud.cerebras.ai | ~1M tokens/day |
+| Mistral | `https://api.mistral.ai/v1` | https://console.mistral.ai/api-keys | "Experiment" plan: phone verification, data used for training |
+| NVIDIA NIM | `https://integrate.api.nvidia.com/v1` | https://build.nvidia.com/settings/api-keys | ~40 req/min, phone verification |
+
+Paid additions: DeepSeek (`https://api.deepseek.com`, https://platform.deepseek.com/api_keys) and xAI (`https://api.x.ai/v1`, https://console.x.ai). The free tiers were checked in October 2026 against cheahjs/free-llm-api-resources and each provider's docs. They change often. GitHub Models (retired July 2026) and Together (no free tier) are not included.
 
 ### Model discovery (why the lists below are only a fallback)
 

@@ -25,6 +25,7 @@ import platform
 import queue
 import re
 import sys
+import tempfile
 import threading
 import time
 import webbrowser
@@ -75,20 +76,21 @@ LIGHT = {
     "header_fg": "#1565c0",
 }
 
-PROVIDERS = [
-    {"name": "Anthropic (Claude)", "key": "anthropic",
-     "models": ["claude-opus-5", "claude-sonnet-5", "claude-haiku-4-5", "claude-fable-5-1"]},
-    {"name": "OpenAI", "key": "openai",
-     "models": ["gpt-6-luna", "gpt-6-sol", "gpt-6-astra"]},
-    {"name": "Google (Gemini)", "key": "google",
-     "models": ["gemini-3.5-flash-lite", "gemini-3.8-flash", "gemini-3.1-pro-preview"]},
-    {"name": "Groq", "key": "groq",
-     "models": ["openai/gpt-oss-20b", "openai/gpt-oss-120b", "qwen/qwen3.8-27b"]},
-    {"name": "OpenRouter", "key": "openrouter",
-     "models": ["openrouter/free", "openrouter/auto", "google/gemma-4-31b-it:free"]},
-    {"name": "Local (llama.cpp)", "key": "local",
-     "models": ["auto-detect"]},
-]
+LOCAL_PROVIDER = {"name": "Local (llama.cpp)", "key": "local", "models": ["auto-detect"]}
+ADD_KEY_ITEM = "+ Add API key…"
+
+
+def menu_providers() -> list[dict]:
+    """Sidebar provider list: cloud providers with a key this session, then local.
+
+    Driven by providers/catalog.py; keys are added in the API keys window.
+    """
+    from providers.catalog import PROVIDERS as CLOUD
+    out = [{"name": p.label, "key": p.key, "models": list(p.models) or [p.default_model]}
+           for p in CLOUD if ChatBackend.key_for(p.key)]
+    local_first = ChatBackend.boot_context.get("mode") == "local"
+    return [LOCAL_PROVIDER] + out if local_first else out + [LOCAL_PROVIDER]
+
 
 FONT_FAMILY = "Segoe UI" if platform.system() == "Windows" else "Helvetica"
 MONO_FAMILY = "Consolas" if platform.system() == "Windows" else "DejaVu Sans Mono"
@@ -129,6 +131,14 @@ class ChatBackend:
     # Agent is built from it so the desktop app shares the web UI's engine.
     boot_context: dict = {}
 
+    @classmethod
+    def key_for(cls, provider: str) -> str:
+        """API key for *provider* in this session ('' if none)."""
+        entry = cls.preloaded_keys.get(provider)
+        if isinstance(entry, dict):
+            return entry.get("api_key", "") or ""
+        return entry if isinstance(entry, str) else ""
+
     def __init__(self):
         self.response_queue: queue.Queue = queue.Queue()
         self._running = False
@@ -166,7 +176,8 @@ class ChatBackend:
         if self._agent is None:
             from agent.agent import Agent
             ctx = dict(self.boot_context)
-            if self.preloaded_keys and not ctx.get("api_keys"):
+            if not ctx.get("api_keys"):
+                # Same dict the API keys window edits, so new keys apply
                 ctx["api_keys"] = self.preloaded_keys
             agent = Agent(boot_context=ctx)
             agent._policy._confirm_fn = self._gui_confirm   # GUI, not stdin
@@ -200,9 +211,8 @@ class ChatBackend:
 
             # In local mode the loaded GGUF is used; provider/model steer
             # only API routing.
-            route = {}
-            if agent._mode in ("api", "hybrid") and provider_key != "local":
-                route = {"provider": provider_key, "model": model}
+            route = {"provider": "local"} if provider_key == "local" \
+                else {"provider": provider_key, "model": model}
 
             t0 = time.time()
             produced = False
@@ -364,30 +374,29 @@ class CarryAIApp:
 
         # Provider
         self._lbl(sb, "Provider")
-        prov_names = [p["name"] for p in PROVIDERS]
-        self._provider_var = tk.StringVar(value=prov_names[0])
+        self._menu_provs = menu_providers()
+        self._provider_var = tk.StringVar(value=self._menu_provs[0]["name"])
         if CTK:
             self._prov_menu = ctk.CTkOptionMenu(sb, variable=self._provider_var,
-                values=prov_names, command=self._on_provider_change, width=190)
+                values=[ADD_KEY_ITEM], command=self._on_provider_change, width=190)
         else:
-            self._prov_menu = tk.OptionMenu(sb, self._provider_var, *prov_names,
-                command=self._on_provider_change)
+            self._prov_menu = tk.OptionMenu(sb, self._provider_var, ADD_KEY_ITEM)
             self._prov_menu.config(bg=self.C["bg3"], fg=self.C["fg"],
                                     highlightthickness=0, font=(FONT_FAMILY, 11))
         self._prov_menu.pack(padx=14, pady=(0, 8), fill="x")
 
         # Model
         self._lbl(sb, "Model")
-        first_models = PROVIDERS[0]["models"]
-        self._model_var = tk.StringVar(value=first_models[0])
+        self._model_var = tk.StringVar(value="")
         if CTK:
             self._model_menu = ctk.CTkOptionMenu(sb, variable=self._model_var,
-                values=first_models, width=190)
+                values=[""], width=190)
         else:
-            self._model_menu = tk.OptionMenu(sb, self._model_var, *first_models)
+            self._model_menu = tk.OptionMenu(sb, self._model_var, "")
             self._model_menu.config(bg=self.C["bg3"], fg=self.C["fg"],
                                      highlightthickness=0, font=(FONT_FAMILY, 11))
         self._model_menu.pack(padx=14, pady=(0, 8), fill="x")
+        self._refresh_provider_menu()
 
         self._sep(sb)
 
@@ -422,6 +431,7 @@ class CarryAIApp:
         bf.pack(side="bottom", fill="x", padx=10, pady=10)
         btns = [
             ("Models", self._open_model_manager, self.C["accent2"]),
+            ("API Keys", self._open_api_keys, self.C["accent2"]),
             ("Export Chat", self._export_chat, self.C["border"]),
             ("Web UI", self._open_web_ui, self.C["border"]),
         ]
@@ -596,7 +606,7 @@ class CarryAIApp:
         self._input_text.configure(height=2)
         self._on_focus_in()
 
-        prov = next((p for p in PROVIDERS if p["name"] == self._provider_var.get()), PROVIDERS[0])
+        prov = self._current_provider()
         model = self._model_var.get()
 
         # Prior turns (before this new user message) — replayed into the
@@ -933,17 +943,53 @@ class CarryAIApp:
     def _sep(self, parent):
         tk.Frame(parent, height=1, bg=self.C["border"]).pack(fill="x", padx=10, pady=8)
 
-    def _on_provider_change(self, _=None):
-        prov = next((p for p in PROVIDERS if p["name"] == self._provider_var.get()), PROVIDERS[0])
-        models = prov["models"]
-        self._model_var.set(models[0])
+    def _current_provider(self) -> dict:
+        name = self._provider_var.get()
+        return next((p for p in self._menu_provs if p["name"] == name), self._menu_provs[0])
+
+    def _set_menu(self, widget, var, values, on_pick=None):
+        """Replace an option menu's items (CTk or plain tk)."""
         if CTK:
-            self._model_menu.configure(values=models)
-        else:
-            menu = self._model_menu["menu"]
-            menu.delete(0, "end")
-            for m in models:
-                menu.add_command(label=m, command=lambda v=m: self._model_var.set(v))
+            widget.configure(values=values)
+            return
+        menu = widget["menu"]
+        menu.delete(0, "end")
+        for v in values:
+            menu.add_command(label=v, command=lambda v=v: (var.set(v), on_pick and on_pick(v)))
+
+    def _refresh_provider_menu(self):
+        """Rebuild the provider list (after keys were added or removed)."""
+        self._menu_provs = menu_providers()
+        names = [p["name"] for p in self._menu_provs]
+        self._set_menu(self._prov_menu, self._provider_var, names + [ADD_KEY_ITEM],
+                       self._on_provider_change)
+        if self._provider_var.get() not in names:
+            self._provider_var.set(names[0])
+        self._on_provider_change()
+
+    def _on_provider_change(self, _=None):
+        if self._provider_var.get() == ADD_KEY_ITEM:
+            self._provider_var.set(self._menu_provs[0]["name"])
+            self._open_api_keys()
+        models = self._current_provider()["models"]
+        if self._model_var.get() not in models:
+            self._model_var.set(models[0])
+        self._set_menu(self._model_menu, self._model_var, models)
+
+    def _open_api_keys(self):
+        ApiKeysDialog(self)
+
+    def on_keys_changed(self, added: list[str] | None = None):
+        """Keys were added/removed in the API keys window."""
+        agent = self.backend._agent
+        if agent is not None:
+            agent.set_api_keys(ChatBackend.preloaded_keys)
+        self._refresh_provider_menu()
+        # Switch to a provider the user just added a key for
+        new = [p["name"] for p in self._menu_provs if p["key"] in (added or [])]
+        if new:
+            self._provider_var.set(new[0])
+            self._on_provider_change()
 
     def _update_status(self, text: str, online: bool = True):
         color = self.C["accent"] if online else self.C["error"]
@@ -1097,7 +1143,7 @@ class ModelManagerWindow:
                                      insertbackground=self.C["fg"],
                                      font=(FONT_FAMILY, 10), relief="flat")
         self._token_entry.pack(side="left", padx=4, pady=6)
-        self._token_entry.insert(0, ChatBackend.preloaded_keys.get("huggingface")
+        self._token_entry.insert(0, ChatBackend.key_for("huggingface")
                                  or os.environ.get("HF_TOKEN", ""))
         tk.Button(tf, text="Sign in with Hugging Face", command=self._sign_in_hf,
                   bg=self.C["accent2"], fg="#111", font=(FONT_FAMILY, 9, "bold"),
@@ -1559,7 +1605,7 @@ class ModelManagerWindow:
         """Token arrives from the sign-in dialog (on the Tk thread)."""
         self._token_entry.delete(0, "end")
         self._token_entry.insert(0, token)
-        ChatBackend.preloaded_keys["huggingface"] = token   # this session, RAM only
+        ChatBackend.preloaded_keys["huggingface"] = {"api_key": token}  # RAM only
         self._hf_status.config(text=f"Signed in as {username}" if username else "Signed in")
         from tkinter import messagebox
         if messagebox.askyesno(
@@ -1570,39 +1616,7 @@ class ModelManagerWindow:
             self._save_hf_token(token)
 
     def _save_hf_token(self, token: str):
-        from tkinter import messagebox, simpledialog
-        from crypto.keystore import KeyStore
-        enc = PROJECT_ROOT / "config" / "providers.enc"
-        try:
-            text = enc.read_text(encoding="utf-8").strip() if enc.is_file() else ""
-        except OSError:
-            text = ""
-        existing = bool(text) and not text.startswith("#")
-        prompt = ("Keystore passphrase:" if existing
-                  else "Choose a passphrase for the new keystore:")
-        pw = simpledialog.askstring("Encrypted keystore", prompt, show="*", parent=self._win)
-        if not pw:
-            return
-        if not existing:
-            again = simpledialog.askstring("Encrypted keystore", "Repeat the passphrase:",
-                                           show="*", parent=self._win)
-            if again != pw:
-                messagebox.showerror("Keystore", "Passphrases didn't match.", parent=self._win)
-                return
-        ks = KeyStore(enc_path=str(enc))
-        try:
-            if existing:
-                ks.unlock(pw)
-            else:
-                ks.init_new(pw)
-            ks.add("huggingface", "api_key", token)
-            messagebox.showinfo("Keystore", "Saved (encrypted, on the USB).", parent=self._win)
-        except ValueError:
-            messagebox.showerror("Keystore", "Wrong passphrase — not saved.", parent=self._win)
-        except Exception as e:
-            messagebox.showerror("Keystore", f"Could not save: {e}", parent=self._win)
-        finally:
-            ks.lock()
+        save_keys_encrypted(self._win, {"huggingface": token})
 
     def _fit(self, size_gb: float):
         """Fit estimate against this PC's free RAM + dedicated VRAM."""
@@ -1794,6 +1808,53 @@ except ImportError:
     _qrcode = None
 
 
+def save_keys_encrypted(parent, changes: dict) -> bool:
+    """Write API keys to the encrypted keystore on the USB (providers.enc).
+
+    *changes* maps provider -> key; an empty/None key removes that provider.
+    Asks for the passphrase (or a new one if no keystore exists yet).
+    Returns True if saved.
+    """
+    from tkinter import messagebox, simpledialog
+    from crypto.keystore import KeyStore
+    enc = PROJECT_ROOT / "config" / "providers.enc"
+    try:
+        text = enc.read_text(encoding="utf-8").strip() if enc.is_file() else ""
+    except OSError:
+        text = ""
+    existing = bool(text) and not text.startswith("#")
+    prompt = ("Keystore passphrase:" if existing
+              else "Choose a passphrase for the new keystore:")
+    pw = simpledialog.askstring("Encrypted keystore", prompt, show="*", parent=parent)
+    if not pw:
+        return False
+    if not existing:
+        again = simpledialog.askstring("Encrypted keystore", "Repeat the passphrase:",
+                                       show="*", parent=parent)
+        if again != pw:
+            messagebox.showerror("Keystore", "Passphrases didn't match.", parent=parent)
+            return False
+    ks = KeyStore(enc_path=str(enc))
+    try:
+        if not existing or not ks.unlock(pw):
+            ks.init_new(pw)
+        for provider, key in changes.items():
+            if key:
+                ks.add(provider, "api_key", key, save=False)
+            else:
+                ks.remove(provider, save=False)
+        ks.save()
+        messagebox.showinfo("Keystore", "Saved (encrypted, on the USB).", parent=parent)
+        return True
+    except ValueError:
+        messagebox.showerror("Keystore", "Wrong passphrase — not saved.", parent=parent)
+    except Exception as e:
+        messagebox.showerror("Keystore", f"Could not save: {e}", parent=parent)
+    finally:
+        ks.lock()
+    return False
+
+
 def qr_canvas(parent, text: str, px: int = 200):
     """A Tk canvas showing *text* as a QR code, or None without `qrcode`.
 
@@ -1816,6 +1877,204 @@ def qr_canvas(parent, text: str, px: int = 200):
                 c.create_rectangle(x * cell, y * cell, (x + 1) * cell, (y + 1) * cell,
                                    fill="black", outline="")
     return c
+
+
+class ApiKeysDialog:
+    """Settings → API keys: one row per cloud provider in providers/catalog.py.
+
+    Free-to-start providers are listed first. "Get key" shows the provider's
+    key page as a QR code (for the user's phone) or opens it in a throwaway
+    private window — never the host's own browser. "Test" checks the key
+    with a cheap authenticated call. Keys live in RAM for the session and
+    are optionally saved, encrypted, to providers.enc on the USB.
+    """
+
+    def __init__(self, app):
+        from providers.catalog import free_providers, paid_providers
+        self._app = app
+        C = self.C = app.C
+        self._entries: dict[str, tk.Entry] = {}
+        self._status: dict[str, tk.Label] = {}
+        self._results: queue.Queue = queue.Queue()
+
+        self._win = tk.Toplevel(app._root)
+        self._win.title("API keys")
+        self._win.configure(bg=C["bg"])
+        self._win.geometry("760x640")
+        self._win.transient(app._root)
+
+        tk.Label(self._win, text="Cloud API keys", font=(FONT_FAMILY, 15, "bold"),
+                 fg=C["fg"], bg=C["bg"]).pack(padx=20, pady=(16, 2), anchor="w")
+        tk.Label(self._win, text="Optional — add any you have. Keys stay in memory for this "
+                                 "session unless you save them (encrypted, on the USB).",
+                 font=(FONT_FAMILY, 10), fg=C["fg2"], bg=C["bg"],
+                 wraplength=700, justify="left").pack(padx=20, anchor="w")
+
+        # Scrollable body
+        outer = tk.Frame(self._win, bg=C["bg"])
+        outer.pack(fill="both", expand=True, padx=12, pady=8)
+        canvas = tk.Canvas(outer, bg=C["bg"], highlightthickness=0)
+        sb = tk.Scrollbar(outer, orient="vertical", command=canvas.yview)
+        body = tk.Frame(canvas, bg=C["bg"])
+        body.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas.create_window((0, 0), window=body, anchor="nw")
+        canvas.configure(yscrollcommand=sb.set)
+        canvas.pack(side="left", fill="both", expand=True)
+        sb.pack(side="right", fill="y")
+        # Bound on the dialog (every child has it in its bindtags), not
+        # bind_all, so nothing is left behind once the dialog closes.
+        self._win.bind("<MouseWheel>",
+                       lambda e: canvas.yview_scroll(-1 if e.delta > 0 else 1, "units"))
+        self._win.bind("<Button-4>", lambda e: canvas.yview_scroll(-1, "units"))
+        self._win.bind("<Button-5>", lambda e: canvas.yview_scroll(1, "units"))
+
+        self._section(body, "Free to start",
+                      "No credit card needed — good for trying carry-ai out. Free tiers are "
+                      "rate-limited and may log prompts; don't send anything private.")
+        for p in free_providers():
+            self._row(body, p)
+        self._section(body, "Paid (pay as you go)", "Best quality; billed per token.")
+        for p in paid_providers():
+            self._row(body, p)
+
+        bar = tk.Frame(self._win, bg=C["bg2"])
+        bar.pack(fill="x", side="bottom")
+        for text, cmd, color in (("Close", self._win.destroy, C["bg3"]),
+                                 ("Save & remember", lambda: self._save(remember=True), C["accent2"]),
+                                 ("Use this session", lambda: self._save(remember=False), C["accent"])):
+            tk.Button(bar, text=text, command=cmd, bg=color,
+                      fg=C["fg"] if color == C["bg3"] else "#111",
+                      font=(FONT_FAMILY, 10, "bold"), relief="flat", cursor="hand2",
+                      padx=12, pady=4).pack(side="right", padx=6, pady=8)
+        self._poll()
+
+    # -- layout --------------------------------------------------------
+
+    def _section(self, parent, title: str, note: str):
+        C = self.C
+        tk.Label(parent, text=title, font=(FONT_FAMILY, 12, "bold"),
+                 fg=C["accent"], bg=C["bg"]).pack(padx=8, pady=(12, 0), anchor="w")
+        tk.Label(parent, text=note, font=(FONT_FAMILY, 9), fg=C["fg3"], bg=C["bg"],
+                 wraplength=690, justify="left").pack(padx=8, pady=(0, 4), anchor="w")
+
+    def _row(self, parent, p):
+        C = self.C
+        row = tk.Frame(parent, bg=C["bg2"])
+        row.pack(fill="x", padx=6, pady=3)
+        top = tk.Frame(row, bg=C["bg2"])
+        top.pack(fill="x", padx=10, pady=(6, 0))
+        tk.Label(top, text=p.label, font=(FONT_FAMILY, 11, "bold"),
+                 fg=C["fg"], bg=C["bg2"]).pack(side="left")
+        tk.Label(top, text="  " + p.blurb, font=(FONT_FAMILY, 9),
+                 fg=C["fg2"], bg=C["bg2"]).pack(side="left")
+        if p.free_note:
+            tk.Label(row, text=p.free_note, font=(FONT_FAMILY, 9), fg=C["fg3"],
+                     bg=C["bg2"], wraplength=680, justify="left").pack(padx=10, anchor="w")
+
+        line = tk.Frame(row, bg=C["bg2"])
+        line.pack(fill="x", padx=10, pady=(4, 8))
+        entry = tk.Entry(line, show="•", width=44, bg=C["input_bg"], fg=C["fg"],
+                         insertbackground=C["fg"], font=(MONO_FAMILY, 10), relief="flat")
+        from providers.catalog import detected_key
+        current = ChatBackend.key_for(p.key)
+        detected = "" if current else detected_key(p.key)
+        entry.insert(0, current or detected)
+        entry.pack(side="left", ipady=3)
+        self._entries[p.key] = entry
+        for text, cmd in (("Get key", lambda p=p: KeyLinkDialog(self._win, self.C, p)),
+                          ("Test", lambda p=p: self._test(p))):
+            tk.Button(line, text=text, command=cmd, bg=C["bg3"], fg=C["fg"],
+                      font=(FONT_FAMILY, 9), relief="flat", cursor="hand2",
+                      padx=8).pack(side="left", padx=(6, 0))
+        status = tk.Label(line, text="(detected)" if detected else "✓ set" if current else "",
+                          font=(FONT_FAMILY, 9),
+                          fg=C["accent"], bg=C["bg2"])
+        status.pack(side="left", padx=8)
+        self._status[p.key] = status
+
+    # -- actions -------------------------------------------------------
+
+    def _test(self, p):
+        key = self._entries[p.key].get().strip()
+        if not key:
+            self._status[p.key].config(text="enter a key first", fg=self.C["fg3"])
+            return
+        self._status[p.key].config(text="testing…", fg=self.C["fg3"])
+
+        def work():
+            from providers.catalog import validate_key
+            self._results.put((p.key, validate_key(p.key, key)))
+        threading.Thread(target=work, daemon=True).start()
+
+    def _poll(self):
+        try:
+            while True:
+                name, (state, msg) = self._results.get_nowait()
+                color = {"ok": self.C["accent"], "invalid": self.C["error"]}.get(state, self.C["fg2"])
+                self._status[name].config(text=msg, fg=color)
+        except queue.Empty:
+            pass
+        if self._win.winfo_exists():
+            self._win.after(200, self._poll)
+
+    def _save(self, remember: bool):
+        from providers.catalog import normalize_key
+        keys = ChatBackend.preloaded_keys      # same dict the launcher wipes on exit
+        changes = {}
+        for name, entry in self._entries.items():
+            new = normalize_key(entry.get())
+            if new == ChatBackend.key_for(name):
+                continue
+            changes[name] = new
+            if new:
+                entry_dict = keys.get(name) if isinstance(keys.get(name), dict) else {}
+                keys[name] = {**entry_dict, "api_key": new}
+            else:
+                keys.pop(name, None)
+        if remember and changes:
+            if not save_keys_encrypted(self._win, changes):
+                return
+        self._app.on_keys_changed(added=[n for n, k in changes.items() if k])
+        self._win.destroy()
+
+
+class KeyLinkDialog:
+    """Where to get a key: QR for the phone, copy link, or a private window."""
+
+    def __init__(self, parent, C, p):
+        self._url = p.key_url
+        win = self._win = tk.Toplevel(parent)
+        win.title(f"{p.label} API key")
+        win.configure(bg=C["bg"])
+        win.transient(parent)
+        tk.Label(win, text=f"Get your {p.label} API key", font=(FONT_FAMILY, 13, "bold"),
+                 fg=C["fg"], bg=C["bg"]).pack(padx=24, pady=(16, 4))
+        tk.Label(win, text="Scan with your phone, sign in, create a key, then type or paste "
+                           "it here.", font=(FONT_FAMILY, 10), fg=C["fg2"], bg=C["bg"],
+                 wraplength=360).pack(padx=24)
+        qr = qr_canvas(win, self._url, px=180)
+        if qr is not None:
+            qr.pack(pady=10)
+        tk.Label(win, text=self._url, font=(MONO_FAMILY, 10), fg=C["accent"],
+                 bg=C["bg"]).pack(padx=24, pady=(4, 8))
+        bar = tk.Frame(win, bg=C["bg"])
+        bar.pack(pady=(0, 16))
+        for text, cmd in (("Copy link", self._copy),
+                          ("Open in private window", self._open),
+                          ("Close", win.destroy)):
+            tk.Button(bar, text=text, command=cmd, bg=C["bg3"], fg=C["fg"],
+                      font=(FONT_FAMILY, 9), relief="flat", padx=8).pack(side="left", padx=4)
+
+    def _copy(self):
+        # The clipboard is wiped on eject (cleanup step 3).
+        self._win.clipboard_clear()
+        self._win.clipboard_append(self._url)
+
+    def _open(self):
+        from ui.browser import open_private
+        session_dir = (os.environ.get("CARRY_AI_SESSION_DIR")
+                       or os.path.join(tempfile.gettempdir(), "ai_session"))
+        open_private(self._url, session_dir)
 
 
 class HfSignInDialog:

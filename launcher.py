@@ -458,8 +458,11 @@ def _desktop_available() -> bool:
 def _run_desktop(context: dict) -> None:
     """Run the desktop app on the main thread until closed or ejected."""
     from ui.desktop import CarryAIApp, ChatBackend
-    if isinstance(context.get("api_keys"), dict):
-        ChatBackend.preloaded_keys = context["api_keys"]
+    # One dict for the whole session: keys added in the app's API keys
+    # window land here too, so they are zeroed with the rest on exit.
+    if not isinstance(context.get("api_keys"), dict):
+        context["api_keys"] = {}
+    ChatBackend.preloaded_keys = context["api_keys"]
     # Share the full boot context so the desktop app's Agent runs in the
     # same mode (local/api/hybrid) with the same model as the rest of boot.
     ChatBackend.boot_context = context

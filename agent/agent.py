@@ -342,7 +342,10 @@ class Agent:
 
         self._history = ConversationHistory(system_prompt, context_budget=budget)
         self._policy = PermissionPolicy(mode=self._context.get("permission_mode", "ask"))
-        self._runner = None   # LocalRunner or APIRouter — initialized lazily
+        # Both initialized lazily. Hybrid mode keeps both: the "local"
+        # provider goes to llama-server, everything else to the API router.
+        self._local_runner = None   # LocalRunner
+        self._api_runner = None     # APIRouter
         self._total_turns = 0
 
         # Register memory tools into the tool registry
@@ -362,30 +365,56 @@ class Agent:
         self.on_tool_end: Optional[Callable] = None      # fn(tool_name, result)
         self.on_stream_chunk: Optional[Callable] = None   # fn(text_chunk)
 
-    def _get_runner(self):
-        """Lazily initialize the LLM runner based on mode."""
-        if self._runner is not None:
-            return self._runner
-
+    def _uses_local(self, provider: str | None = None) -> bool:
+        """Does a turn routed to *provider* run on the local GGUF?"""
         if self._mode == "local":
-            from modes.local_mode import LocalRunner
-            model_path = self._context.get("model_path")
-            self._runner = LocalRunner(
-                model_path=Path(model_path) if model_path else None,
-                port=self._context.get("llama_port", 8081),
-            )
-            if not self._runner.is_running():
-                self._runner.start()
-        elif self._mode in ("api", "hybrid"):
-            from modes.api_mode import APIRouter
-            self._runner = APIRouter(
-                decrypted_keys=self._context.get("api_keys") or {},
-            )
-            self._runner.start()
-        else:
+            return True
+        return self._mode == "hybrid" and provider == "local"
+
+    def _get_runner(self, provider: str | None = None):
+        """Lazily initialize the runner that serves *provider*."""
+        if self._mode not in ("local", "api", "hybrid"):
             raise RuntimeError(f"Unknown mode: {self._mode}")
 
-        return self._runner
+        if self._uses_local(provider):
+            if self._local_runner is None:
+                from modes.local_mode import LocalRunner
+                model_path = self._context.get("model_path")
+                self._local_runner = LocalRunner(
+                    model_path=Path(model_path) if model_path else None,
+                    port=self._context.get("llama_port", 8081),
+                )
+                if not self._local_runner.is_running():
+                    self._local_runner.start()
+            return self._local_runner
+
+        if self._api_runner is None:
+            from modes.api_mode import APIRouter
+            self._api_runner = APIRouter(
+                decrypted_keys=self._context.get("api_keys") or {},
+            )
+            self._api_runner.start()
+        return self._api_runner
+
+    def set_api_keys(self, keys: dict) -> None:
+        """Use a new set of cloud API keys from now on (keys added in the UI).
+
+        The API router is rebuilt on the next turn. A local-only session
+        becomes hybrid (local model + cloud) or api if no model is loaded.
+        """
+        self._context["api_keys"] = keys
+        if self._api_runner is not None:
+            try:
+                self._api_runner.shutdown()
+            except Exception as e:
+                log.debug("API router shutdown failed: %s", e)
+            self._api_runner = None
+        from modes.api_mode import NON_CHAT_CREDENTIALS
+        has_cloud = any(not k.startswith("_") and k not in NON_CHAT_CREDENTIALS
+                        and v for k, v in (keys or {}).items())
+        if self._mode == "local" and has_cloud:
+            self._mode = "hybrid" if self._context.get("model_path") else "api"
+            log.info("Cloud keys added; mode is now %s.", self._mode)
 
     def _call_llm(self, messages: list[dict], tools: list[dict] | None = None) -> dict:
         """Send messages to LLM and return normalized response dict.
@@ -397,19 +426,11 @@ class Agent:
 
         kwargs = {"tools": tools} if tools else {}
 
-        if self._mode == "local":
-            resp = runner.chat(messages, **kwargs)
-            return {
-                "content": resp.get("content", "") if isinstance(resp, dict) else resp.content,
-                "tool_calls": resp.get("tool_calls") if isinstance(resp, dict) else resp.tool_calls,
-            }
-        else:
-            # API mode — returns ChatResponse
-            resp = runner.chat(messages, **kwargs)
-            return {
-                "content": resp.content if hasattr(resp, "content") else resp.get("content", ""),
-                "tool_calls": resp.tool_calls if hasattr(resp, "tool_calls") else resp.get("tool_calls"),
-            }
+        # LocalRunner returns a dict, APIRouter a ChatResponse
+        resp = runner.chat(messages, **kwargs)
+        if isinstance(resp, dict):
+            return {"content": resp.get("content", ""), "tool_calls": resp.get("tool_calls")}
+        return {"content": resp.content, "tool_calls": resp.tool_calls}
 
     def turn(self, user_message: str) -> str:
         """Execute a single conversation turn.
@@ -552,9 +573,10 @@ class Agent:
         iteration = 0
 
         # Route selection only applies to the API router; the local runner
-        # serves whatever GGUF is loaded.
+        # serves whatever GGUF is loaded ("local" picks it in hybrid mode).
+        local = self._uses_local(provider)
         route_kwargs: dict = {}
-        if self._mode in ("api", "hybrid"):
+        if not local:
             if provider:
                 route_kwargs["provider"] = provider
             if model:
@@ -563,7 +585,7 @@ class Agent:
         while iteration < MAX_ITERATIONS:
             iteration += 1
 
-            runner = self._get_runner()
+            runner = self._get_runner("local" if local else provider)
             kwargs = {"tools": tools} if tools else {}
             kwargs.update(route_kwargs)
 
@@ -572,10 +594,7 @@ class Agent:
             collected_tool_calls = []
 
             try:
-                if self._mode == "local":
-                    stream = runner.stream(self._history.messages, **kwargs)
-                else:
-                    stream = runner.stream(self._history.messages, **kwargs)
+                stream = runner.stream(self._history.messages, **kwargs)
 
                 for chunk in stream:
                     chunk_type = chunk.get("type", "")
@@ -812,12 +831,13 @@ class Agent:
         except Exception as e:
             log.warning("Failed to save session memory: %s", e)
 
-        if self._runner:
-            try:
-                self._runner.shutdown()
-            except Exception:
-                pass
-            self._runner = None
+        for runner in (self._local_runner, self._api_runner):
+            if runner:
+                try:
+                    runner.shutdown()
+                except Exception:
+                    pass
+        self._local_runner = self._api_runner = None
         self._history.clear()
         log.info("Agent shut down.")
 
