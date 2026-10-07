@@ -18,7 +18,6 @@ Features:
 Uses customtkinter if installed (modern look), falls back to tkinter.
 """
 
-import importlib
 import json
 import logging
 import os
@@ -126,22 +125,28 @@ class ChatBackend:
     # Keys already decrypted by launcher.py for this session (in RAM only),
     # so the user is not asked for the passphrase again on every message.
     preloaded_keys: dict = {}
+    # Boot context from launcher.py (mode, model_path, api_keys, ...); the
+    # Agent is built from it so the desktop app shares the web UI's engine.
+    boot_context: dict = {}
 
     def __init__(self):
         self.response_queue: queue.Queue = queue.Queue()
         self._running = False
         self._cancel = threading.Event()
+        self._agent = None
+        self._loaded_conv_id: str | None = None
 
     @property
     def is_running(self) -> bool:
         return self._running
 
-    def send_message(self, conversation: list[dict], provider_key: str, model: str) -> None:
+    def send_message(self, conv_id: str, history: list[dict], user_text: str,
+                     provider_key: str, model: str) -> None:
         self._running = True
         self._cancel.clear()
         t = threading.Thread(
-            target=self._run_inference,
-            args=(list(conversation), provider_key, model),
+            target=self._run_agent,
+            args=(conv_id, list(history), user_text, provider_key, model),
             daemon=True,
         )
         t.start()
@@ -149,72 +154,80 @@ class ChatBackend:
     def cancel(self):
         self._cancel.set()
 
-    def _run_inference(self, messages: list[dict], provider_key: str, model: str) -> None:
+    # -- Shared agent ----------------------------------------------------
+
+    def _get_agent(self):
+        """Build the ReAct Agent once, from the launcher's boot context.
+
+        Same engine the web UI uses: tools, local GGUF or API routing,
+        persistent memory and the permission policy. Starting a local
+        llama-server can block, so this runs on the worker thread.
+        """
+        if self._agent is None:
+            from agent.agent import Agent
+            ctx = dict(self.boot_context)
+            if self.preloaded_keys and not ctx.get("api_keys"):
+                ctx["api_keys"] = self.preloaded_keys
+            agent = Agent(boot_context=ctx)
+            agent._policy._confirm_fn = self._gui_confirm   # GUI, not stdin
+            self._agent = agent
+        return self._agent
+
+    def _gui_confirm(self, tool_name: str, args: dict, reason: str) -> bool:
+        """Permission prompt marshalled to the Tk main thread.
+
+        The agent runs on a worker thread, so we hand the request to the UI
+        via the queue and block on an Event until the dialog is answered.
+        """
+        done = threading.Event()
+        result = {"allowed": False}
+        self.response_queue.put(("permission", {
+            "tool": tool_name, "args": args, "reason": reason,
+            "event": done, "result": result,
+        }))
+        done.wait()
+        return result["allowed"]
+
+    def _run_agent(self, conv_id: str, history: list[dict], user_text: str,
+                   provider_key: str, model: str) -> None:
         try:
+            agent = self._get_agent()
+            # Keep the agent's in-memory history in step with the GUI's
+            # active conversation: replay prior turns only on a switch.
+            if conv_id != self._loaded_conv_id:
+                agent.load_history(history)
+                self._loaded_conv_id = conv_id
+
+            # In local mode the loaded GGUF is used; provider/model steer
+            # only API routing.
+            route = {}
+            if agent._mode in ("api", "hybrid") and provider_key != "local":
+                route = {"provider": provider_key, "model": model}
+
             t0 = time.time()
-            text = self._call_provider(messages, provider_key, model)
-            elapsed = time.time() - t0
-            for i in range(0, len(text), 3):
+            produced = False
+            for event in agent.stream_turn(user_text, **route):
                 if self._cancel.is_set():
-                    self.response_queue.put(("done", ""))
-                    return
-                self.response_queue.put(("chunk", text[i:i+3]))
-                time.sleep(0.012)
-            self.response_queue.put(("done", f"{elapsed:.1f}s"))
+                    break
+                etype = event.get("type")
+                if etype == "text":
+                    produced = True
+                    self.response_queue.put(("chunk", event["data"]))
+                elif etype == "tool_start":
+                    name = event["data"].get("name", "tool")
+                    self.response_queue.put(("tool", f"→ {name}…"))
+                elif etype == "tool_result":
+                    name = event["data"].get("name", "tool")
+                    self.response_queue.put(("tool", f"✓ {name}"))
+                elif etype == "done":
+                    break
+            if not produced:
+                self.response_queue.put(("chunk", ""))
+            self.response_queue.put(("done", f"{time.time() - t0:.1f}s"))
         except Exception as e:
             self.response_queue.put(("error", str(e)))
         finally:
             self._running = False
-
-    def _call_provider(self, messages: list[dict], provider_key: str, model: str) -> str:
-        provider_map = {
-            "anthropic": ("providers.anthropic_provider", "AnthropicProvider"),
-            "openai":    ("providers.openai_provider",    "OpenAIProvider"),
-            "google":    ("providers.google_oauth",       "GoogleProvider"),
-            "groq":      ("providers.groq_provider",      "GroqProvider"),
-            "openrouter":("providers.openrouter_provider", "OpenRouterProvider"),
-        }
-        if provider_key == "local":
-            return ("Local mode requires a running llama-server.\n"
-                    "Start with: python launcher.py --mode local\n"
-                    "Then use the Web UI at localhost:8080.")
-        if provider_key not in provider_map:
-            return f"Provider '{provider_key}' not supported yet."
-
-        module_path, class_name = provider_map[provider_key]
-        key = self._get_key(provider_key)
-        if not key:
-            return (f"No {provider_key} API key configured.\n\n"
-                    "Set one up:\n  python onboard.py\n  python crypto/keystore.py setup")
-        try:
-            mod = importlib.import_module(module_path)
-            ProviderClass = getattr(mod, class_name)
-        except ImportError as e:
-            return f"Missing dependency: {e}\nRun: pip install -r requirements.txt"
-        except AttributeError:
-            return f"Provider class {class_name} not found."
-        try:
-            prov = ProviderClass(api_key=key)
-            resp = prov.chat(messages, model=model)
-            return resp.content
-        except Exception as e:
-            return f"Provider error ({provider_key}): {e}"
-
-    def _get_key(self, name: str) -> str | None:
-        if self.preloaded_keys.get(name):
-            return self.preloaded_keys[name]
-        env = os.environ.get(f"CARRY_AI_{name.upper()}_KEY")
-        if env:
-            return env
-        try:
-            from crypto.keystore import KeyStore
-            enc = PROJECT_ROOT / "config" / "providers.enc"
-            if enc.is_file():
-                ks = KeyStore(enc_path=enc)
-                return ks.decrypt_interactive().get(name)
-        except Exception:
-            pass
-        return None
 
 # ---------------------------------------------------------------------------
 # Main app
@@ -586,6 +599,10 @@ class CarryAIApp:
         prov = next((p for p in PROVIDERS if p["name"] == self._provider_var.get()), PROVIDERS[0])
         model = self._model_var.get()
 
+        # Prior turns (before this new user message) — replayed into the
+        # agent only if the GUI has switched conversations.
+        prior = list(self._active_conv.messages)
+
         # Save to conversation
         self._active_conv.messages.append({"role": "user", "content": text,
                                             "time": time.time()})
@@ -602,7 +619,8 @@ class CarryAIApp:
         self._stop_btn.pack()
         self._update_status("Generating...", True)
 
-        self.backend.send_message(self._active_conv.messages, prov["key"], model)
+        self.backend.send_message(self._active_conv.id, prior, text,
+                                  prov["key"], model)
 
     def _stop_generation(self):
         self.backend.cancel()
@@ -620,10 +638,15 @@ class CarryAIApp:
         self._has_messages = True
 
     def _clear_thinking(self):
-        """Remove the thinking indicator, keep the ai_name header."""
-        if hasattr(self, "_thinking_idx"):
+        """Remove the thinking indicator, keep the ai_name header.
+
+        One-shot: the insertion mark is dropped after the first call so
+        later tool/stream events don't delete content inserted since.
+        """
+        idx = self.__dict__.pop("_thinking_idx", None)
+        if idx is not None:
             self._chat_text.configure(state="normal")
-            self._chat_text.delete(self._thinking_idx, "end")
+            self._chat_text.delete(idx, "end")
             self._chat_text.configure(state="disabled")
 
     def _display_message(self, role: str, content: str, ts: float | None = None):
@@ -729,6 +752,16 @@ class CarryAIApp:
                     self._chat_text.configure(state="disabled")
                     self._chat_text.see("end")
                     self._stream_buf.append(data)
+                elif msg_type == "tool":
+                    # Agent tool activity (→ calling / ✓ done) shown as a
+                    # dim status line in the transcript.
+                    self._clear_thinking()
+                    self._chat_text.configure(state="normal")
+                    self._chat_text.insert("end", f"{data}\n", "thinking")
+                    self._chat_text.configure(state="disabled")
+                    self._chat_text.see("end")
+                elif msg_type == "permission":
+                    self._handle_permission(data)
                 elif msg_type == "done":
                     if not self._streaming:
                         self._clear_thinking()
@@ -772,6 +805,26 @@ class CarryAIApp:
         except queue.Empty:
             pass
         self._root.after(30, self._poll_queue)
+
+    def _handle_permission(self, req: dict):
+        """Show a modal yes/no dialog for a tool the agent wants to run.
+
+        Runs on the Tk main thread; unblocks the waiting agent thread by
+        setting the result and the Event the request carries.
+        """
+        from tkinter import messagebox
+        detail = req.get("reason", "Run this tool?")
+        args = req.get("args") or {}
+        if args:
+            preview = ", ".join(f"{k}={str(v)[:60]}" for k, v in args.items())
+            detail = f"{detail}\n\n{preview}"
+        try:
+            allowed = messagebox.askyesno(
+                f"Allow tool: {req.get('tool', '?')}", detail, icon="warning")
+        except Exception:
+            allowed = False
+        req["result"]["allowed"] = bool(allowed)
+        req["event"].set()
 
     # ==================================================================
     # Conversation management

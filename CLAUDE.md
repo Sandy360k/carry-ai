@@ -56,7 +56,7 @@ carry-ai/
 ├── ui/
 │   ├── app.py               # Flask SPA at localhost:8080 (token + Host guard, HTML/CSS/JS embedded)
 │   ├── browser.py           # Opens the web UI in an isolated app window (throwaway profile)
-│   └── desktop.py           # Native desktop chat app (customtkinter/tkinter), run by launcher.py
+│   └── desktop.py           # Native desktop chat app — drives the same Agent as the web UI (customtkinter/tkinter), run by launcher.py
 
 ├── mcp/
 │   ├── client.py            # JSON-RPC transport (stdio, HTTP, SSE)
@@ -378,18 +378,22 @@ The USB drive carries its own Python runtime. No installation on the host machin
 USB_ROOT/
 ├── carry-ai/              ← this repo
 ├── python-env/
-│   ├── windows/           ← embeddable Python + site-packages
+│   ├── windows/           ← bundled python.exe + Lib/site-packages (PBS)
 │   └── linux/
+│       ├── python/        ← bundled python3.12 (PBS, install_only)
 │       └── site-packages/ ← packages, injected via PYTHONPATH
+├── bin/llama/
+│   ├── <os>-vulkan/       ← llama-server (GPU via any display driver)
+│   └── <os>-cpu/          ← llama-server (fallback)
 ├── models/                ← GGUF files
 ├── start.bat / start.sh   ← entry points
 ```
 
 **Boot path on Windows:**
-`start.bat` → `python-env\windows\python.exe bootstrap.py` → injects USB site-packages → `launcher.main()`
+`start.bat` → bundled `python-env\windows\python.exe bootstrap.py --ui desktop` → injects USB site-packages → `launcher.main()`
 
 **Boot path on Linux:**
-`start.sh` sets `PYTHONPATH=python-env/linux/site-packages` → `python3 bootstrap.py` → `launcher.main()`
+`start.sh` runs bundled `python-env/linux/python/bin/python3.12 bootstrap.py --ui desktop` (host `python3` only if no bundle); on a noexec mount it stages Python + site-packages in the RAM session dir first → `launcher.main()`
 
 **flash_usb.py** is the host-side "Rufus" equivalent: detects USB drives, copies carry-ai, downloads packages and GGUF models onto the USB, writes start scripts. Run it once on any machine with Python installed to prepare a USB.
 
@@ -409,7 +413,8 @@ USB_ROOT/
 8. **Voice pipeline** — `integrations/voice_tools.py` is fully optional; all four deps (pyaudio, assemblyai, elevenlabs, Pillow) are guarded. Never make them required.
 9. **Onboarding** — `onboard.py` uses `rich` for the visual experience but has a complete plain-text fallback; it must run with only stdlib if rich is not yet installed.
 10. **USB self-hosting** — `flash_usb.py` and `setup_usb.py` install packages with `pip install --target` into the USB. `bootstrap.py` injects that directory via `sys.path.insert(0, ...)`. Never assume host site-packages are available; all imports that aren't stdlib should be guarded with try/except.
-11. **Portable Python URL** — Windows embeddable Python is downloaded from `https://www.python.org/ftp/python/{VERSION}/python-{VERSION}-embed-amd64.zip`. The version string in the URL uses dots (e.g. `3.11.9`), not digits concatenated.
+11. **Bundled runtimes** — `portable/runtime.py` is the single source of truth for the Python and llama.cpp builds carried on the USB (pinned versions + SHA-256; `flash_usb.py`, `setup_usb.py` and `update_usb.py` all call it). Python comes from astral-sh/python-build-standalone, not the python.org embeddable zip. Bump `PYTHON_VERSION`/`PYTHON_RELEASE`/`LLAMA_BUILD` and their hashes together. Extraction must stay symlink-free (USB = exFAT/FAT32); packages are cross-installed for the bundled interpreter via `--platform`/`--python-version`, never the host's.
+12. **noexec USB** — many Linux automounts use `noexec`, so compiled code (the interpreter and `.so`/`.pyd` wheels) can't run from the stick. `start.sh` detects this and stages Python + site-packages in the RAM session dir; `bootstrap.py` prefers that staged copy via `$CARRY_AI_SESSION_DIR`. Keep that path intact when touching either file.
 12. **"No trace" scope** — carry-ai can only remove what it creates in user space (session dir, browser profile, clipboard, its recent-file entries). OS execution/USB records (Prefetch, Amcache, USBSTOR, journald…) need admin and are out of scope; don't claim otherwise in docs.
 13. **Cleanup must survive eject** — anything `cleanup/cleanup.py` or the eject path needs must be imported at boot; never add lazy imports there. Only kill processes carry-ai started (descendants / binaries on the USB).
 14. **Web UI access** — every request needs the loopback Host header and the per-session token cookie (`ui/app.py`); new routes get this automatically via `before_request`.

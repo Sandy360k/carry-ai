@@ -53,6 +53,15 @@ def _inject_usb_packages() -> bool:
         # Linux / macOS
         site_pkgs = usb_root / "python-env" / "linux" / "site-packages"
 
+    # On a noexec-mounted USB, start.sh stages a runnable copy of
+    # site-packages in the session dir (compiled wheels can't mmap from
+    # noexec). Prefer it so we don't re-add the unusable USB copy.
+    session_dir = os.environ.get("CARRY_AI_SESSION_DIR")
+    if session_dir:
+        staged = Path(session_dir) / "site-packages"
+        if staged.is_dir():
+            site_pkgs = staged
+
     if site_pkgs.is_dir():
         sys.path.insert(0, str(site_pkgs))
         # Also add the carry-ai/ dir itself so relative imports work

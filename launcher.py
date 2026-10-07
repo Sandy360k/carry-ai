@@ -249,9 +249,13 @@ def inject_session(host_os: str, dry_run: bool = False) -> Path:
     else:
         # /dev/shm is a RAM-backed tmpfs on virtually every distro and needs
         # no root, so session files never touch the host's disk.
+        # start.sh may already have created it (noexec USB → Python copied
+        # into the session dir); reuse that so one wipe covers both.
+        preset = os.environ.get("CARRY_AI_SESSION_DIR")
         shm = Path("/dev/shm")
         base = shm if shm.is_dir() and os.access(shm, os.W_OK) else Path("/tmp")
-        session_dir = base / "ai_session"
+        session_dir = Path(preset) if preset and Path(preset).name == "ai_session" \
+            else base / "ai_session"
         if not session_dir.exists():
             log.info("Creating session directory: %s", session_dir)
             session_dir.mkdir(parents=True, exist_ok=True)
@@ -454,6 +458,9 @@ def _run_desktop(context: dict) -> None:
     from ui.desktop import CarryAIApp, ChatBackend
     if isinstance(context.get("api_keys"), dict):
         ChatBackend.preloaded_keys = context["api_keys"]
+    # Share the full boot context so the desktop app's Agent runs in the
+    # same mode (local/api/hybrid) with the same model as the rest of boot.
+    ChatBackend.boot_context = context
     app = CarryAIApp()
     app.close_when(context["shutdown_event"])
     app.run()

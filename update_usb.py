@@ -76,6 +76,9 @@ except ImportError:
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+from portable import runtime  # noqa: E402
 MANIFEST_FILENAME = ".carry_ai_manifest.json"
 
 # Files/dirs to never update (user data, secrets, models, runtime)
@@ -583,6 +586,8 @@ class PackageDiff:
     to_install: list[str] = field(default_factory=list)    # pkg==ver specs
     up_to_date: list[str] = field(default_factory=list)
     site_pkgs: Optional[Path] = None
+    usb_root: Optional[Path] = None
+    os_name: str = ""
 
 
 def compute_package_diff(req_file: Path, site_pkgs: Path,
@@ -606,28 +611,20 @@ def apply_package_diff(diff: PackageDiff, dry_run: bool = False) -> bool:
     pip install --target <site_pkgs> <packages>
     Returns True on success.
     """
-    if not diff.to_install or diff.site_pkgs is None:
+    if not diff.to_install or diff.usb_root is None:
         return True
 
     if dry_run:
         for pkg in diff.to_install:
-            _info(f"  [DRY RUN] would install: {pkg}")
+            _info(f"  [DRY RUN] would install ({diff.os_name}): {pkg}")
         return True
 
-    diff.site_pkgs.mkdir(parents=True, exist_ok=True)
-    cmd = [
-        sys.executable, "-m", "pip", "install",
-        "--target", str(diff.site_pkgs),
-        "--quiet",
-        "--disable-pip-version-check",
-    ] + diff.to_install
-
-    console.print(f"  Running pip install for {len(diff.to_install)} package(s)...")
-    result = subprocess.run(cmd, capture_output=True, text=True)
-    if result.returncode != 0:
-        _err("pip install failed:")
-        for line in result.stderr.splitlines()[-20:]:
-            console.print(f"    {line}")
+    # Install for the USB's bundled interpreter (cross-platform wheels),
+    # not the host's — see portable/runtime.py.
+    console.print(f"  Installing {len(diff.to_install)} package(s) for {diff.os_name}...")
+    failed = runtime.install_packages(diff.to_install, diff.usb_root, diff.os_name)
+    if failed:
+        _err(f"pip install failed for: {', '.join(failed)}")
         return False
     return True
 
@@ -789,41 +786,35 @@ def run_update(
         req_file = PROJECT_ROOT / "requirements.txt"
         req_hash = sha256_file(req_file) if req_file.exists() else ""
 
-        # Determine USB site-packages location
-        os_name = platform.system().lower()
-        if os_name == "windows":
-            site_pkgs = usb_root / "python-env" / "windows" / "Lib" / "site-packages"
-        else:
-            site_pkgs = usb_root / "python-env" / "linux" / "site-packages"
-
         console.print()
         console.print("  [bold]Checking packages...[/bold]" if _RICH else "  Checking packages...")
 
-        if not site_pkgs.is_dir():
-            _warn(f"USB site-packages not found at {site_pkgs}")
-            _warn("Package update skipped.  Run setup_usb.py on the USB to create it.")
-        else:
+        # Update every bundled interpreter present on the USB (both OSes if
+        # the stick was flashed for both), using cross-platform wheels.
+        present = [(o, runtime.site_packages(usb_root, o))
+                   for o in runtime.OS_NAMES
+                   if runtime.site_packages(usb_root, o).is_dir()]
+        if not present:
+            _warn("No USB site-packages found under python-env/.")
+            _warn("Run setup_usb.py or flash_usb.py to create the runtime first.")
+        for os_name, site_pkgs in present:
             diff_pkgs = compute_package_diff(req_file, site_pkgs, manifest)
-            _info(f"Packages: {len(diff_pkgs.to_install)} to install, "
+            diff_pkgs.usb_root = usb_root
+            diff_pkgs.os_name = os_name
+            _info(f"{os_name}: {len(diff_pkgs.to_install)} to install, "
                   f"{len(diff_pkgs.up_to_date)} up-to-date")
-
             if diff_pkgs.to_install:
-                if not dry_run:
-                    ok = apply_package_diff(diff_pkgs, dry_run=False)
-                    if ok:
-                        _ok(f"Installed {len(diff_pkgs.to_install)} package(s).")
-                    else:
-                        _err("Some packages failed to install.")
-                        return False
-                else:
-                    apply_package_diff(diff_pkgs, dry_run=True)
+                ok = apply_package_diff(diff_pkgs, dry_run=dry_run)
+                if ok and not dry_run:
+                    _ok(f"Installed {len(diff_pkgs.to_install)} package(s) for {os_name}.")
+                elif not ok:
+                    _err(f"Some packages failed to install for {os_name}.")
+                    return False
             else:
-                _ok("All packages are already up to date.")
-
-            # Update manifest's installed packages snapshot
+                _ok(f"All packages up to date for {os_name}.")
             if not dry_run:
                 manifest.installed_packages = _installed_packages_in(site_pkgs)
-            manifest.requirements_hash = req_hash
+        manifest.requirements_hash = req_hash
 
     # ── Write manifest ───────────────────────────────────────────────────────
     if not dry_run and not packages_only:

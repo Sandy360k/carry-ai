@@ -100,13 +100,6 @@ def _prompt(prompt, default=""):
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
-PYTHON_VERSION = "3.11.9"
-PYTHON_EMBED_URLS = {
-    "amd64": f"https://www.python.org/ftp/python/{PYTHON_VERSION}/python-{PYTHON_VERSION}-embed-amd64.zip",
-    "win32": f"https://www.python.org/ftp/python/{PYTHON_VERSION}/python-{PYTHON_VERSION}-embed-win32.zip",
-}
-GET_PIP_URL = "https://bootstrap.pypa.io/get-pip.py"
-
 # Package groups
 CORE_PACKAGES = [
     "psutil>=5.9.0",
@@ -114,6 +107,7 @@ CORE_PACKAGES = [
     "flask>=3.0.0",
     "requests>=2.31.0",
     "rich>=13.7.0",
+    "customtkinter>=5.2.0",
 ]
 PROVIDER_PACKAGES = [
     "anthropic>=0.30.0",
@@ -136,6 +130,9 @@ VOICE_PACKAGES = [
 # pyaudio needs portaudio system lib — handled separately with instructions
 
 PROJECT_ROOT = Path(__file__).resolve().parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+from portable import runtime  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -239,149 +236,6 @@ def _download_file(url: str, dest: Path, label: str = "") -> bool:
         return False
     dest.write_bytes(data)
     return True
-
-
-# ---------------------------------------------------------------------------
-# Windows: embeddable Python
-# ---------------------------------------------------------------------------
-
-def setup_windows_embedded_python(dirs: dict) -> bool:
-    """Download and extract the Windows embeddable Python package.
-
-    Returns True if python.exe is available at the end.
-    """
-    win_dir = dirs["win"]
-    python_exe = dirs["win_python"]
-
-    if python_exe.is_file():
-        console.print(f"  [green]✓[/green] Portable Python already present: {python_exe}")
-        return True
-
-    win_dir.mkdir(parents=True, exist_ok=True)
-
-    # Detect architecture
-    arch = "amd64" if platform.machine().lower() in ("amd64", "x86_64") else "win32"
-    url = PYTHON_EMBED_URLS[arch]
-    console.print(f"  Fetching portable Python {PYTHON_VERSION} ({arch}) ...")
-
-    zip_data = _download_bytes(url, f"python-{PYTHON_VERSION}-embed-{arch}.zip")
-    if not zip_data:
-        console.print("  [red]✗ Failed to download portable Python.[/red]")
-        return False
-
-    console.print("  Extracting ...")
-    try:
-        with zipfile.ZipFile(io.BytesIO(zip_data)) as zf:
-            zf.extractall(win_dir)
-    except Exception as e:
-        console.print(f"  [red]✗ Extraction failed: {e}[/red]")
-        return False
-
-    # Patch ._pth file to enable site-packages loading
-    _patch_pth_file(win_dir)
-
-    console.print(f"  [green]✓[/green] Portable Python extracted to {win_dir}")
-    return python_exe.is_file()
-
-
-def _patch_pth_file(win_dir: Path) -> None:
-    """Patch pythonXX._pth to enable site.py and our site-packages dir."""
-    pth_files = list(win_dir.glob("python*._pth"))
-    if not pth_files:
-        return
-    pth = pth_files[0]
-    content = pth.read_text(encoding="utf-8")
-    # Uncomment 'import site' if commented out
-    content = content.replace("#import site", "import site")
-    # Add Lib/site-packages if not already there
-    if "Lib\\site-packages" not in content:
-        content += "\nLib\\site-packages\n"
-    pth.write_text(content, encoding="utf-8")
-    console.print(f"  Patched {pth.name} to enable site-packages.")
-
-
-def install_pip_into_embedded(python_exe: Path) -> bool:
-    """Download get-pip.py and install pip into the embedded Python."""
-    pip_check = subprocess.run(
-        [str(python_exe), "-m", "pip", "--version"],
-        capture_output=True
-    )
-    if pip_check.returncode == 0:
-        console.print("  [green]✓[/green] pip already available in embedded Python.")
-        return True
-
-    console.print("  Installing pip into portable Python ...")
-    get_pip_data = _download_bytes(GET_PIP_URL, "get-pip.py")
-    if not get_pip_data:
-        return False
-
-    with tempfile.NamedTemporaryFile(suffix=".py", delete=False) as f:
-        f.write(get_pip_data)
-        get_pip_path = f.name
-
-    try:
-        result = subprocess.run(
-            [str(python_exe), get_pip_path, "--no-warn-script-location"],
-            capture_output=True, text=True
-        )
-        if result.returncode != 0:
-            console.print(f"  [red]pip install failed:[/red] {result.stderr[-500:]}")
-            return False
-        console.print("  [green]✓[/green] pip installed.")
-        return True
-    finally:
-        os.unlink(get_pip_path)
-
-
-# ---------------------------------------------------------------------------
-# Package installation
-# ---------------------------------------------------------------------------
-
-def install_packages(packages: list[str], target_dir: Path,
-                     python_exe: Path | None = None) -> list[str]:
-    """Install packages into target_dir using pip --target.
-
-    Returns list of packages that failed to install.
-    """
-    target_dir.mkdir(parents=True, exist_ok=True)
-    failed = []
-
-    interpreter = str(python_exe) if python_exe else sys.executable
-
-    for pkg in packages:
-        pkg_name = pkg.split(">=")[0].split("==")[0].strip()
-        console.print(f"  Installing [cyan]{pkg_name}[/cyan] ...", end=" ")
-        result = subprocess.run(
-            [
-                interpreter, "-m", "pip", "install",
-                pkg,
-                "--target", str(target_dir),
-                "--upgrade",
-                "--no-warn-script-location",
-                "--quiet",
-            ],
-            capture_output=True, text=True
-        )
-        if result.returncode == 0:
-            console.print("[green]✓[/green]")
-        else:
-            console.print("[red]✗[/red]")
-            if result.stderr:
-                console.print(f"    [dim]{result.stderr.strip()[-200:]}[/dim]")
-            failed.append(pkg_name)
-
-    return failed
-
-
-def install_from_requirements(req_file: Path, target_dir: Path,
-                               python_exe: Path | None = None) -> list[str]:
-    """Install all packages from a requirements.txt (skips comments)."""
-    packages = []
-    for line in req_file.read_text().splitlines():
-        line = line.strip()
-        if line and not line.startswith("#"):
-            packages.append(line)
-    return install_packages(packages, target_dir, python_exe)
 
 
 # ---------------------------------------------------------------------------
@@ -605,6 +459,7 @@ def main() -> None:
     install_models    = _confirm("  Model management (huggingface-hub)?", default=True)
     install_tools     = _confirm("  Agent tools (pyautogui, pyperclip)?", default=True)
     install_voice     = _confirm("  Voice pipeline (assemblyai, elevenlabs, Pillow)?", default=False)
+    setup_llama       = _confirm("  llama.cpp for local models (Vulkan GPU + CPU, ~140 MB/OS)?", default=True)
 
     packages_to_install = list(CORE_PACKAGES)
     if install_providers:
@@ -618,50 +473,45 @@ def main() -> None:
 
     console.print(f"\n  [bold]{len(packages_to_install)}[/bold] packages selected.")
 
-    # ---- Linux setup -------------------------------------------------------
-    if setup_linux:
-        console.rule("Linux packages")
-        site = dirs["linux_site"]
-        site.mkdir(parents=True, exist_ok=True)
-        console.print(f"  Target: {site}\n")
+    # ---- Per-OS runtime: Python + packages + llama.cpp ---------------------
+    cache = Path.home() / ".cache" / "carry-ai-setup"
 
-        failed_linux = install_packages(packages_to_install, site)
+    def _progress(label):
+        def _cb(written, total):
+            if total:
+                print(f"\r    {label}: {written/1_048_576:.1f}/{total/1_048_576:.1f} MB "
+                      f"({written * 100 // total}%)", end="", flush=True)
+        return _cb
 
-        if failed_linux:
-            console.print(f"\n  [yellow]⚠ {len(failed_linux)} package(s) failed on Linux:[/yellow]")
-            for p in failed_linux:
-                console.print(f"    - {p}")
+    for os_name, wanted in (("linux", setup_linux), ("windows", setup_win)):
+        if not wanted:
+            continue
+        console.rule(f"{os_name.capitalize()} runtime")
+        try:
+            runtime.install_python(usb_root, os_name, cache, progress=_progress(f"python-{os_name}"))
+            print()
+        except (OSError, ValueError) as e:
+            console.print(f"  [red]✗ Portable Python failed: {e}[/red]")
+            continue
+
+        def _report(name, ok):
+            console.print(f"  {'[green]✓[/green]' if ok else '[red]✗[/red]'} {name}")
+        failed = runtime.install_packages(packages_to_install, usb_root, os_name, report=_report)
+        if failed:
+            console.print(f"  [yellow]⚠ Failed:[/yellow] {', '.join(failed)}")
         else:
-            console.print(f"\n  [green]✓ All packages installed for Linux.[/green]")
+            console.print(f"  [green]✓ All packages installed for {os_name}.[/green]")
 
-        size = _dir_size_mb(dirs["linux"])
-        console.print(f"  Linux env size: {size:.0f} MB")
+        if setup_llama:
+            try:
+                runtime.install_llama(usb_root, os_name, cache, progress=_progress(f"llama-{os_name}"))
+                print()
+                console.print(f"  [green]✓ llama.cpp (Vulkan + CPU) bundled for {os_name}.[/green]")
+            except (OSError, ValueError) as e:
+                console.print(f"  [yellow]⚠ llama.cpp download failed: {e}[/yellow]")
 
-    # ---- Windows setup -----------------------------------------------------
-    if setup_win:
-        console.rule("Windows portable Python")
-
-        ok = setup_windows_embedded_python(dirs)
-        if not ok:
-            console.print("  [red]✗ Could not set up portable Python. Skipping Windows packages.[/red]")
-        else:
-            ok = install_pip_into_embedded(dirs["win_python"])
-            if ok:
-                console.print("\n  Installing packages into portable Python ...\n")
-                failed_win = install_packages(
-                    packages_to_install,
-                    dirs["win_site"],
-                    python_exe=dirs["win_python"]
-                )
-                if failed_win:
-                    console.print(f"\n  [yellow]⚠ {len(failed_win)} package(s) failed on Windows:[/yellow]")
-                    for p in failed_win:
-                        console.print(f"    - {p}")
-                else:
-                    console.print(f"\n  [green]✓ All packages installed for Windows.[/green]")
-
-                size = _dir_size_mb(dirs["win"])
-                console.print(f"  Windows env size: {size:.0f} MB")
+        size = _dir_size_mb(usb_root / "python-env" / os_name)
+        console.print(f"  {os_name.capitalize()} env size: {size:.0f} MB")
 
     # ---- Launcher scripts --------------------------------------------------
     console.rule("Launcher scripts")
@@ -689,10 +539,8 @@ def main() -> None:
         "USB environment ready",
         f"Total python-env/ size : {total_size:.0f} MB\n\n"
         "To launch carry-ai from the USB:\n\n"
-        "  Windows  →  double-click start.bat\n"
-        "             or: python-env\\windows\\python.exe carry-ai\\launcher.py\n\n"
-        "  Linux    →  bash start.sh\n"
-        "             or: PYTHONPATH=python-env/linux/site-packages python3 carry-ai/launcher.py\n\n"
+        "  Windows  →  double-click start.bat  (bundled Python — nothing to install)\n\n"
+        "  Linux    →  bash start.sh  (bundled Python — nothing to install)\n\n"
         "To re-run this setup (e.g. after updating requirements):\n"
         "  python carry-ai/setup_usb.py",
         style="green"

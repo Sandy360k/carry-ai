@@ -241,7 +241,17 @@ def find_llama_server() -> Path | None:
     if is_windows:
         alt_names = [n + ".exe" for n in alt_names] + alt_names
 
-    search_dirs = [
+    # Bundled builds live under bin/llama/<os>-<backend>/ (see
+    # portable/runtime.py). Prefer the Vulkan build (GPU via any display
+    # driver), then CPU. USB root is PROJECT_ROOT.parent.
+    os_name = "windows" if is_windows else "linux"
+    bundled = [
+        root / "bin" / "llama" / f"{os_name}-{backend}"
+        for root in (PROJECT_ROOT.parent, PROJECT_ROOT)
+        for backend in ("vulkan", "cpu")
+    ]
+
+    search_dirs = bundled + [
         PROJECT_ROOT / "bin",
         PROJECT_ROOT.parent / "bin",
         PROJECT_ROOT,

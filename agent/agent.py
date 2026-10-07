@@ -505,14 +505,39 @@ class Agent:
         self._history.add_assistant(msg)
         return msg
 
-    def stream_turn(self, user_message: str):
+    def reset_history(self) -> None:
+        """Start a fresh conversation (keeps memory, runner, and policy)."""
+        memory_block = self.memory.build_context_block(max_tokens=800)
+        system_prompt = build_system_prompt(self._context, memory_block=memory_block)
+        self._history = ConversationHistory(
+            system_prompt, context_budget=self._history._context_budget)
+
+    def load_history(self, messages: list[dict]) -> None:
+        """Replace history with prior user/assistant turns (e.g. when a GUI
+        switches to another saved conversation). Tool messages are dropped;
+        only role/content text is replayed."""
+        self.reset_history()
+        for m in messages:
+            role, content = m.get("role"), m.get("content", "")
+            if not content:
+                continue
+            if role == "user":
+                self._history.add_user(content)
+            elif role == "assistant":
+                self._history.add_assistant(content)
+
+    def stream_turn(self, user_message: str, provider: str | None = None,
+                    model: str | None = None):
         """Execute a turn with streaming response.
 
         Yields text chunks as the LLM generates them. Tool calls are
         executed between stream segments.
 
-        Note: Only works when tools are not being used (text-only response).
-        For tool-using turns, falls back to non-streaming turn().
+        Args:
+            user_message: the new user turn (history is kept internally).
+            provider: in api/hybrid mode, the preferred provider to try first.
+            model: in api/hybrid mode, the model id for that provider.
+                   Both are ignored in local mode (the loaded GGUF is used).
 
         Yields:
             dict: {"type": "text"|"tool_start"|"tool_result"|"done", "data": ...}
@@ -526,11 +551,21 @@ class Agent:
         tools = get_tool_definitions()
         iteration = 0
 
+        # Route selection only applies to the API router; the local runner
+        # serves whatever GGUF is loaded.
+        route_kwargs: dict = {}
+        if self._mode in ("api", "hybrid"):
+            if provider:
+                route_kwargs["provider"] = provider
+            if model:
+                route_kwargs["model"] = model
+
         while iteration < MAX_ITERATIONS:
             iteration += 1
 
             runner = self._get_runner()
             kwargs = {"tools": tools} if tools else {}
+            kwargs.update(route_kwargs)
 
             # Attempt streaming
             collected_content = ""
