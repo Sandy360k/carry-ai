@@ -112,11 +112,15 @@ Place this file at `config/settings.json` on the USB drive (next to `carry-ai/`)
       "enabled": false,
       "model": "anthropic/claude-opus-5.5",
       // Base URL for your local G0DM0D3 server (OpenAI-compatible).
-      "base_url": "http://localhost:3000/v1",
+      // (the G0DM0D3 API server listens on 7860; health check is GET <base_url>/health)
+      "base_url": "http://localhost:7860/v1",
       // autotune: let G0DM0D3 auto-detect query type and optimize sampling.
       "autotune": false,
-      // stm_modules: post-processing modules (e.g. "hedge_reducer", "direct_mode").
+      // stm_modules: post-processing modules ("hedge_reducer", "direct_mode", "casual_mode").
       "stm_modules": []
+      // carry-ai always sends "godmode": false and "parseltongue": false (both
+      // default to true server-side: a jailbreak system prompt and input
+      // obfuscation). Set either to true here only if you really want them.
     },
 
     "onyx": {

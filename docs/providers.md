@@ -145,27 +145,27 @@ python crypto/keystore.py add openrouter
 
 G0DM0D3 is a multi-model AI gateway that races queries across many models simultaneously and returns the best response. carry-ai integrates it as a provider via its OpenAI-compatible endpoint.
 
-**Three operating modes:**
+**Operating modes** (virtual model names are passed to the server unchanged; tiers are `fast` (10 models), `standard` (24), `smart` (36), `power` (45), `ultra` (51) — higher tiers need a Pro/Enterprise G0DM0D3 key):
 
 | Mode | Virtual model name | What it does |
 |------|--------------------|-------------|
-| **ULTRAPLINIAN fast** | `ultraplinian/fast` | Races 10 fast models in parallel, returns the winner |
-| **ULTRAPLINIAN smart** | `ultraplinian/smart` | Races 20 quality models |
-| **ULTRAPLINIAN all** | `ultraplinian/all` | Races all 51 models |
-| **CONSORTIUM default** | `consortium/default` | Collects responses from top 10 models, synthesizes a ground-truth answer |
-| **CONSORTIUM deep** | `consortium/deep` | Synthesizes from top 20 models |
+| **ULTRAPLINIAN** | `ultraplinian/<tier>` (e.g. `ultraplinian/fast`) | Races the tier's models in parallel, returns the winner |
+| **CONSORTIUM** | `consortium/<tier>` (e.g. `consortium/smart`) | Collects every response in the tier, synthesizes a ground-truth answer |
+| **Single model** | any OpenRouter model ID | Plain OpenAI-compatible completion |
 | **AutoTune** | any model | Auto-detects query context (code, creative, analytical, etc.) and optimizes sampling |
 
 **Setup:**
 
 ```bash
-# 1. Self-host G0DM0D3 (requires Docker)
-docker run -p 3000:3000 -e OPENROUTER_API_KEY=sk-or-... godmode
+# 1. Self-host the G0DM0D3 API (requires Docker; HF Spaces port 7860)
+docker run -p 7860:7860 -e OPENROUTER_API_KEY=sk-or-... g0dm0d3-api
 
 # 2. Add to keystore
 python crypto/keystore.py add godmode
-# Prompted for: api_key and base_url (default: http://localhost:3000/v1)
+# Prompted for: api_key and base_url (default: http://localhost:7860/v1)
 ```
+
+If the server has no `OPENROUTER_API_KEY`, carry-ai sends your OpenRouter key in the request body as `openrouter_api_key` (an `sk-or-...` value stored as the godmode `api_key` is used for this).
 
 Enable in `config/settings.json`:
 
@@ -174,7 +174,7 @@ Enable in `config/settings.json`:
   "providers": {
     "godmode": {
       "enabled": true,
-      "base_url": "http://localhost:3000/v1",
+      "base_url": "http://localhost:7860/v1",
       "autotune": false,
       "stm_modules": ["direct_mode"]
     }
@@ -182,7 +182,9 @@ Enable in `config/settings.json`:
 }
 ```
 
-**STM (Semantic Transformation Modules)** post-process model output: `hedge_reducer` removes filler phrases like "I think", `direct_mode` gets to the point, `casual_mode` relaxes formal tone, `concise_mode` shortens verbose responses.
+**STM (Semantic Transformation Modules)** post-process model output: `hedge_reducer` removes filler phrases like "I think", `direct_mode` gets to the point, `casual_mode` relaxes formal tone.
+
+**Safety defaults:** G0DM0D3 turns `godmode` (a jailbreak system prompt) and `parseltongue` (input obfuscation) **on** by default. carry-ai always sends `"godmode": false, "parseltongue": false`, plus your `autotune`/`stm_modules` settings, so none of that pipeline runs unless you set `providers.godmode.godmode` / `.parseltongue` to `true` yourself.
 
 ---
 
@@ -228,7 +230,7 @@ Enable in `config/settings.json`:
 }
 ```
 
-Available Onyx personas: `onyx/default` (general RAG), `onyx/research` (deep multi-step research), `onyx/code` (code-aware assistant).
+Available Onyx models: `onyx/default` (general RAG via the default persona) and `onyx/research` (sends `deep_research: true` for multi-step research). carry-ai talks to Onyx's `POST /api/chat/send-chat-message` endpoint and reuses the returned `chat_session_id` for follow-up turns.
 
 ---
 

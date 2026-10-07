@@ -37,7 +37,7 @@ DEFAULTS = {
         "groq":       {"enabled": True,  "model": "openai/gpt-oss-20b"},
         "openrouter": {"enabled": True,  "model": "openrouter/free"},
         "godmode":    {"enabled": False, "model": "anthropic/claude-opus-5.5",
-                       "base_url": "http://localhost:3000/v1",
+                       "base_url": "http://localhost:7860/v1",
                        "autotune": False, "stm_modules": []},
         "onyx":       {"enabled": False, "model": "onyx/default",
                        "base_url": "http://localhost:3000/api"},

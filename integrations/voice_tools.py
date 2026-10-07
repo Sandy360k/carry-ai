@@ -47,11 +47,6 @@ except ImportError:
     paInt16 = None   # type: ignore[assignment]
 
 try:
-    import assemblyai as _assemblyai  # type: ignore[import]
-except ImportError:
-    _assemblyai = None  # type: ignore[assignment]
-
-try:
     from elevenlabs import ElevenLabs, VoiceSettings  # type: ignore[import]
     _elevenlabs_sdk = True
 except ImportError:
@@ -86,6 +81,11 @@ SAMPLE_RATE: int = 16000
 CHANNELS: int = 1
 CHUNK_SIZE: int = 1024
 ASSEMBLYAI_API_URL: str = "https://api.assemblyai.com/v2"
+# eleven_monolingual_v1 was retired 2026-07-09; Flash v2.5 is the low-latency
+# successor. pcm_16000 = raw 16-bit mono PCM at SAMPLE_RATE, which is what
+# _play_pcm_stream() writes straight to PyAudio (the API default is MP3).
+ELEVENLABS_MODEL_ID: str = "eleven_flash_v2_5"
+ELEVENLABS_OUTPUT_FORMAT: str = "pcm_16000"
 
 # ---------------------------------------------------------------------------
 # Configuration dataclass
@@ -287,8 +287,9 @@ class Transcriber:
         """
         Transcribe *audio_path* using AssemblyAI.
 
-        Falls back to a placeholder string when the package or key is
-        missing, so the rest of the pipeline can continue gracefully.
+        Talks to the AssemblyAI REST API with ``requests`` (the assemblyai
+        SDK is not needed). Falls back to a placeholder string when requests
+        or the key is missing, so the rest of the pipeline can continue gracefully.
 
         Parameters
         ----------
@@ -300,10 +301,6 @@ class Transcriber:
         str
             Transcript text, or a fallback message on failure.
         """
-        if _assemblyai is None:
-            log.warning("assemblyai package not installed; transcription unavailable.")
-            return "[voice input not available — install assemblyai]"
-
         if not self.config.assemblyai_key:
             log.warning("No AssemblyAI API key configured; transcription unavailable.")
             return "[voice input not available — configure assemblyai_key]"
@@ -438,11 +435,12 @@ class TTSPlayer:
         if _elevenlabs_sdk and ElevenLabs is not None:
             try:
                 client = ElevenLabs(api_key=self.config.elevenlabs_key)
-                audio_iter = client.generate(
+                # SDK >= 2.0: client.generate() is gone; stream() yields bytes.
+                audio_iter = client.text_to_speech.stream(
+                    voice_id=self.config.elevenlabs_voice_id,
                     text=text,
-                    voice=self.config.elevenlabs_voice_id,
-                    model="eleven_monolingual_v1",
-                    stream=True,
+                    model_id=ELEVENLABS_MODEL_ID,
+                    output_format=ELEVENLABS_OUTPUT_FORMAT,
                 )
                 self._play_pcm_stream(audio_iter)
                 return
@@ -457,10 +455,11 @@ class TTSPlayer:
         url = (
             f"https://api.elevenlabs.io/v1/text-to-speech/"
             f"{self.config.elevenlabs_voice_id}/stream"
+            f"?output_format={ELEVENLABS_OUTPUT_FORMAT}"
         )
         payload = {
             "text": text,
-            "model_id": "eleven_monolingual_v1",
+            "model_id": ELEVENLABS_MODEL_ID,
             "voice_settings": {"stability": 0.5, "similarity_boost": 0.75},
         }
         headers = {
@@ -613,7 +612,7 @@ def is_voice_available() -> dict[str, bool]:
     """
     return {
         "recorder": _pyaudio is not None,
-        "transcriber": _assemblyai is not None,
+        "transcriber": _requests is not None,   # REST only; SDK not needed
         "tts": _elevenlabs_sdk or (_requests is not None),
         "vision": _pil_available or _pyautogui_available,
     }

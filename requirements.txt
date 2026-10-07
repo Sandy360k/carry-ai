@@ -61,15 +61,17 @@ pyperclip>=1.8.2             # Clipboard read/write/wipe
 # ---------------------------------------------------------------------------
 # Integrations (from referenced repos)
 # ---------------------------------------------------------------------------
-# scrapling>=0.2.9           # Adaptive web scraping (D4Vinci/Scrapling)
-                             # pip install scrapling            (HTTP fetcher)
-                             # pip install 'scrapling[fetchers]' (+ stealth browser)
-                             # scrapling install                (browser binaries)
+# scrapling[fetchers]>=0.4    # Adaptive web scraping (D4Vinci/Scrapling)
+                             # pip install "scrapling[fetchers]"  (Fetcher needs the
+                             #   extra: curl_cffi + playwright/patchright)
+                             # scrapling install  (Chromium for stealth; carry-ai points
+                             #   PLAYWRIGHT_BROWSERS_PATH at USB bin/ms-playwright)
 # llmfit                     # Hardware-aware model selection (AlexsJones/llmfit)
-                             # Install: cargo install llmfit (Rust binary)
-                             # Or: download from github.com/AlexsJones/llmfit/releases
-# @anthropic/gws-cli         # Google Workspace CLI (googleworkspace/cli)
-                             # Install: npm install -g @anthropic/gws-cli
+                             # Install: pip install llmfit  (PyPI ships the native
+                             #   binary in platform wheels; no Rust toolchain needed)
+# @googleworkspace/cli       # Google Workspace CLI "gws" (googleworkspace/cli) -- npm,
+                             #   not pip: npm install -g @googleworkspace/cli
+                             #   (or a binary from github.com/googleworkspace/cli/releases)
                              # Auth: gws auth login
 
 # ---------------------------------------------------------------------------
@@ -78,10 +80,9 @@ pyperclip>=1.8.2             # Clipboard read/write/wipe
 # pyaudio>=0.2.14            # Microphone recording + TTS audio playback
 #                            # Linux: sudo apt install portaudio19-dev first
 #                            # macOS: brew install portaudio first
-# assemblyai>=0.24.0         # Speech-to-text transcription (AssemblyAI REST API)
-#                            # pip install assemblyai
-#                            # Key: assemblyai.com → free 5h/month
-# elevenlabs>=1.2.0          # Text-to-speech synthesis (ElevenLabs streaming API)
+#                            # Speech-to-text: AssemblyAI REST API via requests
+#                            # (no SDK needed). Key: assemblyai.com
+# elevenlabs>=2.0.0          # Text-to-speech (ElevenLabs; text_to_speech.stream, SDK 2.x)
 #                            # pip install elevenlabs
 #                            # Key: elevenlabs.io → free 10k chars/month
 # Pillow>=10.0.0             # Screenshot capture fallback (PIL.ImageGrab)

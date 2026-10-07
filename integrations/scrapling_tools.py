@@ -29,19 +29,50 @@ Reference: https://github.com/D4Vinci/Scrapling
 
 import json
 import logging
+import os
+from pathlib import Path
 
 log = logging.getLogger("carry-ai.integrations.scrapling")
 
-# Check Scrapling availability at import time
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+
+# Keep Playwright/Patchright browsers on the USB (USB_ROOT/bin/ms-playwright)
+# instead of the host's ~/.cache/ms-playwright or %LOCALAPPDATA%. Must be set
+# before scrapling/playwright are imported; `scrapling install` (which runs
+# `playwright install chromium`) honours it too.
+PLAYWRIGHT_BROWSERS_DIR = PROJECT_ROOT.parent / "bin" / "ms-playwright"
+os.environ.setdefault("PLAYWRIGHT_BROWSERS_PATH", str(PLAYWRIGHT_BROWSERS_DIR))
+
+INSTALL_HINT = ('  pip install "scrapling[fetchers]"\n'
+                "  scrapling install  # downloads Chromium into the USB's bin/ms-playwright")
+
+
+def _browsers_installed() -> bool:
+    """True if the Playwright browsers dir holds a Chromium build."""
+    root = Path(os.environ.get("PLAYWRIGHT_BROWSERS_PATH") or PLAYWRIGHT_BROWSERS_DIR)
+    try:
+        return any(d.is_dir() and d.name.startswith("chromium") for d in root.iterdir())
+    except OSError:
+        return False
+
+
+# Check Scrapling availability at import time. scrapling.fetchers imports
+# lazily, so a missing [fetchers] extra (curl_cffi/patchright) surfaces here.
 _SCRAPLING_AVAILABLE = False
 _SCRAPLING_STEALTH = False
 
 try:
-    from scrapling.fetchers import Fetcher
+    from scrapling.parser import Selector
+except ImportError:
+    Selector = None
+
+try:
+    from scrapling.fetchers import Fetcher  # noqa: F401
     _SCRAPLING_AVAILABLE = True
     try:
-        from scrapling.fetchers import StealthyFetcher
-        _SCRAPLING_STEALTH = True
+        from scrapling.fetchers import StealthyFetcher  # noqa: F401
+        # The package alone isn't enough: stealth needs a downloaded Chromium.
+        _SCRAPLING_STEALTH = _browsers_installed()
     except ImportError:
         pass
     log.info("Scrapling available (stealth=%s)", _SCRAPLING_STEALTH)
@@ -99,17 +130,13 @@ def _tool_web_fetch_enhanced(url: str, max_length: int = 50000,
         text = _fetch_with_scrapling(url, stealth=stealth)
 
         # Try to extract meaningful text from HTML
-        if _SCRAPLING_AVAILABLE and "<html" in text.lower()[:200]:
+        if Selector is not None and "<html" in text.lower()[:200]:
             try:
-                from scrapling import Adaptor
-                page = Adaptor(text)
-                # Remove script and style tags
-                for elem in page.css("script, style, nav, footer, header"):
-                    try:
-                        elem.remove()
-                    except Exception:
-                        pass
-                text = page.get_all_text(separator="\n") if hasattr(page, "get_all_text") else text
+                page = Selector(text)
+                text = str(page.get_all_text(
+                    separator="\n", strip=True,
+                    ignore_tags=("script", "style", "nav", "footer", "header"),
+                ))
             except Exception:
                 pass  # Use raw text
 
@@ -139,9 +166,7 @@ def _tool_scrape(url: str, selector: str, selector_type: str = "css",
     """
     try:
         if not _SCRAPLING_AVAILABLE:
-            return ("Error: Scrapling not installed. Install with:\n"
-                    "  pip install scrapling\n"
-                    "  scrapling install  # for stealth/dynamic fetchers")
+            return "Error: Scrapling not installed. Install with:\n" + INSTALL_HINT
 
         # Fetch the page
         if stealth and _SCRAPLING_STEALTH:
@@ -185,7 +210,7 @@ def _tool_scrape_stealth(url: str, selector: str = "",
     Uses Scrapling's StealthyFetcher with Cloudflare bypass,
     TLS fingerprint impersonation, and advanced spoofing.
 
-    Requires: pip install 'scrapling[fetchers]' && scrapling install
+    Requires: pip install "scrapling[fetchers]" && scrapling install
 
     Args:
         url: URL to scrape (works with Cloudflare-protected sites).
@@ -194,9 +219,8 @@ def _tool_scrape_stealth(url: str, selector: str = "",
         solve_cloudflare: Attempt to bypass Cloudflare Turnstile.
     """
     if not _SCRAPLING_STEALTH:
-        return ("Error: StealthyFetcher not available. Install with:\n"
-                "  pip install 'scrapling[fetchers]'\n"
-                "  scrapling install")
+        return ("Error: StealthyFetcher not available (needs the [fetchers] extra and a "
+                f"Chromium in {PLAYWRIGHT_BROWSERS_DIR}). Install with:\n" + INSTALL_HINT)
 
     try:
         from scrapling.fetchers import StealthyFetcher
@@ -289,7 +313,7 @@ def register_scrapling_tools():
         description=(
             "Scrape an anti-bot protected site using headless browser with "
             "Cloudflare bypass, TLS fingerprint impersonation, and advanced "
-            "spoofing. Requires: pip install 'scrapling[fetchers]' && scrapling install. "
+            "spoofing. Requires: pip install \"scrapling[fetchers]\" && scrapling install. "
             "Optionally extract elements with CSS/XPath selector."
         ),
         parameters={

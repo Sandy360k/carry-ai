@@ -16,17 +16,28 @@ Features (from G0DM0D3):
 
 Architecture:
     G0DM0D3 exposes an OpenAI-compatible /v1/chat/completions endpoint,
-    so this provider extends OpenAICompatProvider with G0DM0D3-specific
-    extension fields in the request body.
+    so this provider extends OpenAICompatProvider and adds G0DM0D3's
+    extension keys as plain top-level body fields (see API.md):
+        godmode, parseltongue, autotune   (bool; all default TRUE server-side)
+        stm_modules                       (hedge_reducer | direct_mode | casual_mode)
+        openrouter_api_key                (unless the server has OPENROUTER_API_KEY)
+    Virtual models "ultraplinian/<tier>" and "consortium/<tier>" (tiers
+    fast | standard | smart | power | ultra) are passed through unchanged;
+    the server does the racing/synthesis.
+
+    Safety: server-side `godmode` injects a jailbreak system prompt and
+    `parseltongue` obfuscates the user's input. carry-ai always sends both as
+    false unless settings.providers.godmode.godmode / .parseltongue opt in,
+    and sends autotune/stm_modules from settings (default off / none).
 
 Setup:
-    1. Self-host G0DM0D3 API (Docker or HuggingFace Space):
-       docker run -p 3000:3000 -e OPENROUTER_API_KEY=... godmode
+    1. Self-host the G0DM0D3 API (Docker or HuggingFace Space, port 7860):
+       docker run -p 7860:7860 -e OPENROUTER_API_KEY=... g0dm0d3-api
     2. Or use a public instance URL
     3. Store the endpoint URL + API key in carry-ai's keystore:
        python crypto/keystore.py add godmode
 
-Reference: https://github.com/elder-plinius/G0DM0D3
+Reference: https://github.com/elder-plinius/G0DM0D3 (API.md, api/server.ts)
 """
 
 import logging
@@ -35,8 +46,10 @@ from providers.openai_compat import OpenAICompatProvider
 
 log = logging.getLogger("carry-ai.providers.godmode")
 
-# Default G0DM0D3 instance (self-hosted)
-GODMODE_BASE_URL = "http://localhost:3000/v1"
+# Default G0DM0D3 instance (self-hosted API server; HF Spaces port)
+GODMODE_BASE_URL = "http://localhost:7860/v1"
+
+RACE_TIERS = ["fast", "standard", "smart", "power", "ultra"]
 
 # Virtual model names that trigger different racing strategies
 AVAILABLE_MODELS = [
@@ -46,13 +59,10 @@ AVAILABLE_MODELS = [
     "google/gemini-3.8-flash",
     "google/gemma-4-31b-it:free",
     "openrouter/auto",
-    # ULTRAPLINIAN racing tiers (race N models, pick best)
-    "ultraplinian/fast",           # Race 10 fast models
-    "ultraplinian/smart",          # Race 20 quality models
-    "ultraplinian/all",            # Race all 51 models
-    # CONSORTIUM synthesis (collect all, synthesize answer)
-    "consortium/default",          # Synthesize from top 10
-    "consortium/deep",             # Synthesize from top 20
+    # ULTRAPLINIAN: race N models, return the best (10/24/36/45/51 models)
+    *(f"ultraplinian/{t}" for t in RACE_TIERS),
+    # CONSORTIUM: collect all responses, synthesize ground truth
+    *(f"consortium/{t}" for t in RACE_TIERS),
 ]
 
 DEFAULT_MODEL = "anthropic/claude-opus-5.5"
@@ -63,41 +73,44 @@ AUTOTUNE_CATEGORIES = [
     "mathematical", "factual", "instruction", "translation",
 ]
 
-# STM module names (post-processing filters)
+# STM module names accepted by the server (post-processing filters)
 STM_MODULES = [
     "hedge_reducer",    # Removes "I think", "perhaps", "probably"
     "direct_mode",      # Strips filler phrases, gets to the point
     "casual_mode",      # Relaxes formal tone
-    "concise_mode",     # Shortens verbose responses
 ]
+
+
+def _godmode_settings() -> dict:
+    """settings.providers.godmode, or {} if settings can't be loaded."""
+    try:
+        from config.settings import load_settings
+        cfg = (load_settings().to_dict().get("providers") or {}).get("godmode")
+        return cfg if isinstance(cfg, dict) else {}
+    except Exception as e:
+        log.debug("Cannot load godmode settings: %s", e)
+        return {}
 
 
 class GodmodeProvider(OpenAICompatProvider):
     """G0DM0D3 multi-model racing provider.
 
-    Extends OpenAI-compatible base with G0DM0D3's extension fields:
-    - autotune: Auto-optimize sampling parameters per query context
-    - stm_modules: Post-processing filters on model output
-    - race_count: Number of models to race (ULTRAPLINIAN)
-    - synthesis: Enable CONSORTIUM synthesis mode
-
     Usage:
         provider = GodmodeProvider(
-            api_key="sk-or-...",
-            base_url="http://localhost:3000/v1",
+            api_key="godmode-api-key",
+            base_url="http://localhost:7860/v1",
+            openrouter_api_key="sk-or-...",
         )
-        # Standard request
-        response = provider.chat(messages)
-
-        # ULTRAPLINIAN: Race 10 models
-        response = provider.chat(messages, model="ultraplinian/fast")
-
-        # With AutoTune + STM post-processing
+        response = provider.chat(messages)                          # single model
+        response = provider.chat(messages, model="ultraplinian/fast")  # race 10
+        response = provider.chat(messages, model="consortium/smart")   # synthesize
         response = provider.chat(messages, autotune=True, stm_modules=["direct_mode"])
     """
 
     def __init__(self, api_key: str, base_url: str | None = None,
-                 autotune: bool = False, stm_modules: list[str] | None = None):
+                 autotune: bool | None = None, stm_modules: list[str] | None = None,
+                 openrouter_api_key: str | None = None,
+                 godmode: bool | None = None, parseltongue: bool | None = None):
         super().__init__(
             api_key=api_key,
             base_url=base_url or GODMODE_BASE_URL,
@@ -106,8 +119,18 @@ class GodmodeProvider(OpenAICompatProvider):
         self._available_models = AVAILABLE_MODELS
         # Virtual racing/synthesis model names aren't in any /models list
         self._discover_models = False
-        self._autotune = autotune
-        self._stm_modules = stm_modules or []
+        cfg = _godmode_settings() if None in (autotune, stm_modules, godmode, parseltongue) else {}
+        self._autotune = bool(cfg.get("autotune", False)) if autotune is None else bool(autotune)
+        self._stm_modules = list(cfg.get("stm_modules") or []) if stm_modules is None else list(stm_modules)
+        # Off unless the user explicitly opts in: these inject a jailbreak
+        # prompt / perturb the input and default to true on the server.
+        self._godmode = cfg.get("godmode") is True if godmode is None else bool(godmode)
+        self._parseltongue = (cfg.get("parseltongue") is True
+                              if parseltongue is None else bool(parseltongue))
+        # Older carry-ai docs stored the OpenRouter key as the godmode api_key.
+        if openrouter_api_key is None and api_key.startswith("sk-or-"):
+            openrouter_api_key = api_key
+        self._openrouter_api_key = openrouter_api_key or ""
 
     @property
     def provider_name(self) -> str:
@@ -120,85 +143,48 @@ class GodmodeProvider(OpenAICompatProvider):
         }
 
     def _build_payload(self, messages: list[dict], **kwargs) -> dict:
-        """Build payload with G0DM0D3 extension fields."""
-        # Extract G0DM0D3-specific params before passing to base
+        """Build payload with G0DM0D3 extension fields (plain body keys)."""
         autotune = kwargs.pop("autotune", self._autotune)
         stm_modules = kwargs.pop("stm_modules", self._stm_modules)
-        race_count = kwargs.pop("race_count", None)
-        synthesis = kwargs.pop("synthesis", None)
+        godmode = kwargs.pop("godmode", self._godmode)
+        parseltongue = kwargs.pop("parseltongue", self._parseltongue)
 
         payload = super()._build_payload(messages, **kwargs)
 
-        # G0DM0D3 extensions (sent as extra fields in the request body)
-        if autotune:
-            payload["x_godmode_autotune"] = True
-
-        if stm_modules:
-            valid = [m for m in stm_modules if m in STM_MODULES]
-            if valid:
-                payload["x_godmode_stm"] = valid
-
-        if race_count and isinstance(race_count, int) and race_count > 1:
-            payload["x_godmode_race_count"] = race_count
-
-        if synthesis:
-            payload["x_godmode_synthesis"] = True
-
-        # Auto-detect ULTRAPLINIAN/CONSORTIUM from model name
-        model = payload.get("model", "")
-        if model.startswith("ultraplinian/"):
-            tier_map = {"fast": 10, "smart": 20, "all": 51}
-            tier = model.split("/")[-1]
-            payload["x_godmode_race_count"] = tier_map.get(tier, 10)
-            # Override to a concrete model for the backend
-            payload["model"] = "openrouter/auto"
-        elif model.startswith("consortium/"):
-            payload["x_godmode_synthesis"] = True
-            tier_map = {"default": 10, "deep": 20}
-            tier = model.split("/")[-1]
-            payload["x_godmode_race_count"] = tier_map.get(tier, 10)
-            payload["model"] = "openrouter/auto"
-
+        # Sent explicitly every time: the server defaults all of these to on.
+        payload["godmode"] = bool(godmode)
+        payload["parseltongue"] = bool(parseltongue)
+        payload["autotune"] = bool(autotune)
+        payload["stm_modules"] = [m for m in (stm_modules or []) if m in STM_MODULES]
+        if self._openrouter_api_key:
+            payload["openrouter_api_key"] = self._openrouter_api_key
         return payload
 
     def is_available(self) -> bool:
-        """Check if the G0DM0D3 instance is reachable."""
-        if not self._api_key:
-            return False
+        """Check if the G0DM0D3 instance is reachable (GET /v1/health, no auth)."""
         try:
-            import requests
-            resp = requests.get(
-                f"{self._base_url.rstrip('/v1')}/health",
-                timeout=5,
-            )
+            resp = self._session.get(f"{self._base_url}/health", timeout=5)
             return resp.status_code == 200
         except Exception:
-            # Fall back to standard models endpoint check
-            return super().is_available()
+            return False
 
-    def race(self, messages: list[dict], count: int = 10, **kwargs):
-        """Convenience: ULTRAPLINIAN race with explicit count.
-
-        Args:
-            messages: Chat messages.
-            count: Number of models to race (default 10).
+    def race(self, messages: list[dict], tier: str = "fast", **kwargs):
+        """Convenience: ULTRAPLINIAN race at *tier* (fast|standard|smart|power|ultra).
 
         Returns:
             ChatResponse from the winning model.
         """
-        return self.chat(messages, race_count=count, **kwargs)
+        tier = tier if tier in RACE_TIERS else "fast"
+        return self.chat(messages, model=f"ultraplinian/{tier}", **kwargs)
 
-    def synthesize(self, messages: list[dict], count: int = 10, **kwargs):
-        """Convenience: CONSORTIUM synthesis.
-
-        Args:
-            messages: Chat messages.
-            count: Number of models to collect from.
+    def synthesize(self, messages: list[dict], tier: str = "fast", **kwargs):
+        """Convenience: CONSORTIUM synthesis at *tier*.
 
         Returns:
             ChatResponse with synthesized answer.
         """
-        return self.chat(messages, synthesis=True, race_count=count, **kwargs)
+        tier = tier if tier in RACE_TIERS else "fast"
+        return self.chat(messages, model=f"consortium/{tier}", **kwargs)
 
     def autotune_chat(self, messages: list[dict], **kwargs):
         """Convenience: Chat with AutoTune enabled.
