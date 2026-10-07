@@ -361,16 +361,17 @@ SQLite + FTS5 long-term memory that survives USB ejects and reboots (inspired by
 
 Native chat window that launches when you click `start.bat` / `start.sh`:
 
-- **Claude-like chat interface** — dark theme, streaming responses, code blocks
-- **Sidebar** — provider selector (Anthropic, OpenAI, Google, Groq, OpenRouter, Local), model picker
+- **Same engine as the web UI** — the desktop app drives the full ReAct agent, so it has tools, local GGUF **and** API routing, persistent memory, and the permission policy (dangerous tool calls pop a confirm dialog). It is no longer a provider-only chat box.
+- **Claude-like chat interface** — dark theme, streaming responses, code blocks, inline tool-activity lines
+- **Sidebar** — provider selector (Anthropic, OpenAI, Google, Groq, OpenRouter, Local), model picker; in API/hybrid mode these steer which provider and model the agent tries first
 - **Zero config launch** — double-click start.bat on USB, chat window appears
 - **Keyboard shortcuts** — Enter to send, Shift+Enter for newline, Escape to clear
 
-Uses `customtkinter` for a modern look (falls back to plain `tkinter` if not installed). File: [`ui/desktop.py`](ui/desktop.py).
+Launched by `launcher.py` (so it gets the booted agent, eject watcher and wipe); falls back to the web UI when `tkinter` or a display is unavailable. Uses `customtkinter` for a modern look (falls back to plain `tkinter`). File: [`ui/desktop.py`](ui/desktop.py).
 
 ```bash
-python ui/desktop.py       # direct launch
-# or just double-click start.bat / bash start.sh on the USB
+bash start.sh              # or double-click start.bat on the USB
+python launcher.py --ui desktop   # explicit
 ```
 
 ---

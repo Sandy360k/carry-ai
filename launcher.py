@@ -458,6 +458,9 @@ def _run_desktop(context: dict) -> None:
     from ui.desktop import CarryAIApp, ChatBackend
     if isinstance(context.get("api_keys"), dict):
         ChatBackend.preloaded_keys = context["api_keys"]
+    # Share the full boot context so the desktop app's Agent runs in the
+    # same mode (local/api/hybrid) with the same model as the rest of boot.
+    ChatBackend.boot_context = context
     app = CarryAIApp()
     app.close_when(context["shutdown_event"])
     app.run()

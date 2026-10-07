@@ -56,7 +56,7 @@ carry-ai/
 ├── ui/
 │   ├── app.py               # Flask SPA at localhost:8080 (token + Host guard, HTML/CSS/JS embedded)
 │   ├── browser.py           # Opens the web UI in an isolated app window (throwaway profile)
-│   └── desktop.py           # Native desktop chat app (customtkinter/tkinter), run by launcher.py
+│   └── desktop.py           # Native desktop chat app — drives the same Agent as the web UI (customtkinter/tkinter), run by launcher.py
 
 ├── mcp/
 │   ├── client.py            # JSON-RPC transport (stdio, HTTP, SSE)
