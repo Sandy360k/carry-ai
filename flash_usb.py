@@ -67,12 +67,6 @@ except ImportError:
     console = _Plain()
 
 PROJECT_ROOT = Path(__file__).resolve().parent
-PYTHON_VERSION = "3.11.9"
-PYTHON_EMBED_URL_WIN64 = (
-    f"https://www.python.org/ftp/python/{PYTHON_VERSION}/"
-    f"python-{PYTHON_VERSION}-embed-amd64.zip"
-)
-GET_PIP_URL = "https://bootstrap.pypa.io/get-pip.py"
 
 # ---------------------------------------------------------------------------
 # GGUF model catalogue — shared with the boot selector (models/catalog.py),
@@ -81,6 +75,7 @@ GET_PIP_URL = "https://bootstrap.pypa.io/get-pip.py"
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 from models.catalog import CATALOG, mmproj_filename, mmproj_url, recommend_for_ram  # noqa: E402
+from portable import runtime  # noqa: E402
 
 GGUF_MODELS = sorted(CATALOG, key=lambda m: m["ram_gb"])
 
@@ -122,6 +117,7 @@ PACKAGE_GROUPS = {
         "flask>=3.0.0",
         "requests>=2.31.0",
         "rich>=13.7.0",
+        "customtkinter>=5.2.0",
     ],
     "providers": [
         "anthropic>=0.30.0",
@@ -419,50 +415,52 @@ def download_gguf_model(model: dict, models_dir: Path, hf_token: str = "") -> bo
 
 
 # ---------------------------------------------------------------------------
-# Portable Python (Windows)
+# Bundled runtimes (portable/runtime.py): Python + llama.cpp per OS
 # ---------------------------------------------------------------------------
 
-def setup_portable_python_windows(win_env_dir: Path) -> bool:
-    """Download + extract embeddable Python for Windows onto the USB."""
-    python_exe = win_env_dir / "python.exe"
-    if python_exe.exists():
-        console.print(f"  [green]✓[/green] Portable Python already present.")
-        return True
+def _progress(label: str):
+    def _cb(written: int, total: int) -> None:
+        if total:
+            print(f"\r    {label}: {written/1_048_576:.1f}/{total/1_048_576:.1f} MB "
+                  f"({written * 100 // total}%)", end="", flush=True)
+    return _cb
 
-    win_env_dir.mkdir(parents=True, exist_ok=True)
-    console.print(f"  Downloading portable Python {PYTHON_VERSION} (~10 MB) ...")
 
-    zip_dest = win_env_dir / "python-embed.zip"
-    if not download_file_with_progress(PYTHON_EMBED_URL_WIN64, zip_dest, "python-embed.zip"):
+def _runtime_cache(usb_root: Path) -> Path:
+    """Downloads are cached on the flashing host, not on the USB."""
+    return Path.home() / ".cache" / "carry-ai-flash"
+
+
+def setup_portable_python(usb_root: Path, os_name: str) -> bool:
+    """Put the pinned, checksum-verified Python for *os_name* onto the USB."""
+    console.print(f"  Python {runtime.PYTHON_VERSION} for {os_name} "
+                  f"(~{35 if os_name == 'windows' else 25} MB download) ...")
+    try:
+        exe = runtime.install_python(usb_root, os_name, _runtime_cache(usb_root),
+                                     progress=_progress(f"python-{os_name}"))
+    except (OSError, ValueError) as e:
+        print()
+        console.print(f"  [red]✗ Portable Python failed:[/red] {e}")
         return False
+    print()
+    console.print(f"  [green]✓[/green] {exe.relative_to(usb_root)}")
+    return True
 
-    console.print("  Extracting ...")
-    with zipfile.ZipFile(zip_dest) as zf:
-        zf.extractall(win_env_dir)
-    zip_dest.unlink()
 
-    # Patch ._pth to enable site-packages
-    for pth in win_env_dir.glob("python*._pth"):
-        txt = pth.read_text(encoding="utf-8")
-        txt = txt.replace("#import site", "import site")
-        if "Lib\\site-packages" not in txt:
-            txt += "\nLib\\site-packages\n"
-        pth.write_text(txt, encoding="utf-8")
-
-    console.print("  Installing pip into portable Python ...")
-    get_pip_dest = win_env_dir / "get-pip.py"
-    if not download_file_with_progress(GET_PIP_URL, get_pip_dest, "get-pip.py"):
+def setup_llama_server(usb_root: Path, os_name: str) -> bool:
+    """Put the pinned llama-server builds (Vulkan GPU + CPU) onto the USB."""
+    console.print(f"  llama.cpp {runtime.LLAMA_BUILD} for {os_name} (Vulkan + CPU) ...")
+    try:
+        dirs = runtime.install_llama(usb_root, os_name, _runtime_cache(usb_root),
+                                     progress=_progress(f"llama-{os_name}"))
+    except (OSError, ValueError) as e:
+        print()
+        console.print(f"  [red]✗ llama.cpp download failed:[/red] {e}")
         return False
-    result = subprocess.run([str(python_exe), str(get_pip_dest), "--no-warn-script-location", "-q"],
-                            check=False, capture_output=True, text=True)
-    get_pip_dest.unlink(missing_ok=True)
-    if result.returncode != 0:
-        console.print(f"  [red]✗ pip install into portable Python failed:[/red] "
-                      f"{(result.stderr or result.stdout)[-300:]}")
-        return False
-
-    console.print(f"  [green]✓[/green] Portable Python ready.")
-    return python_exe.exists()
+    print()
+    for d in dirs:
+        console.print(f"  [green]✓[/green] {d.relative_to(usb_root)}")
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -520,27 +518,14 @@ def download_localai_binary(usb_root: Path) -> bool:
 # Package installation
 # ---------------------------------------------------------------------------
 
-def install_packages(packages: list[str], target_dir: Path,
-                     python_exe: Path | None = None) -> list[str]:
-    """pip install --target each package. Returns names of failures."""
-    target_dir.mkdir(parents=True, exist_ok=True)
-    interp = str(python_exe) if python_exe else sys.executable
-    failed = []
-    for pkg in packages:
-        name = re.split(r'[><=!]', pkg)[0].strip()
-        console.print(f"  Installing [cyan]{name}[/cyan] ...", end=" ")
-        r = subprocess.run(
-            [interp, "-m", "pip", "install", pkg,
-             "--target", str(target_dir),
-             "--upgrade", "--no-warn-script-location", "-q"],
-            capture_output=True, text=True,
-        )
-        if r.returncode == 0:
-            console.print("[green]✓[/green]")
-        else:
-            console.print("[red]✗[/red]")
-            failed.append(name)
-    return failed
+def install_packages(packages: list[str], usb_root: Path, os_name: str) -> list[str]:
+    """Install *packages* for the bundled Python of *os_name* (from any host).
+
+    Returns names of failures.
+    """
+    def _report(name: str, ok: bool) -> None:
+        console.print(f"  {'[green]✓[/green]' if ok else '[red]✗[/red]'} {name}")
+    return runtime.install_packages(packages, usb_root, os_name, report=_report)
 
 
 # ---------------------------------------------------------------------------
@@ -564,16 +549,8 @@ IF EXIST "%USB_PYTHON%" (
 ENDLOCAL
 """
 
-_START_SH = """#!/usr/bin/env bash
-set -euo pipefail
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-USB_SITE="$SCRIPT_DIR/python-env/linux/site-packages"
-BOOTSTRAP="$SCRIPT_DIR/carry-ai/bootstrap.py"
-[ -d "$USB_SITE" ] && export PYTHONPATH="$USB_SITE${PYTHONPATH:+:$PYTHONPATH}"
-PY=$(command -v python3 || command -v python || echo "")
-[ -z "$PY" ] && { echo "[carry-ai] Python 3.10+ required."; exit 1; }
-exec "$PY" "$BOOTSTRAP" --ui desktop "$@"
-"""
+# The repo's own start.sh (bundled Python, noexec fallback) is the template
+_START_SH = (PROJECT_ROOT / "start.sh").read_text(encoding="utf-8")
 
 _AUTORUN = "[autorun]\nopen=start.bat\nlabel=carry-ai\n"
 
@@ -595,20 +572,25 @@ def write_launcher_scripts(usb_root: Path) -> None:
 # Verification
 # ---------------------------------------------------------------------------
 
-def verify_flash(usb_root: Path, want_win: bool, want_linux: bool) -> dict[str, bool]:
+def verify_flash(usb_root: Path, want_win: bool, want_linux: bool,
+                 want_llama: bool = False) -> dict[str, bool]:
     results = {
         "carry-ai/launcher.py":  (usb_root / "carry-ai" / "launcher.py").is_file(),
         "start.bat":             (usb_root / "start.bat").is_file(),
         "start.sh":              (usb_root / "start.sh").is_file(),
     }
-    if want_linux:
-        results["python-env/linux/site-packages/"] = (
-            usb_root / "python-env" / "linux" / "site-packages"
-        ).is_dir()
-    if want_win:
-        results["python-env/windows/python.exe"] = (
-            usb_root / "python-env" / "windows" / "python.exe"
-        ).is_file()
+    for os_name, wanted in (("linux", want_linux), ("windows", want_win)):
+        if not wanted:
+            continue
+        exe = runtime.python_exe(usb_root, os_name)
+        results[str(exe.relative_to(usb_root))] = exe.is_file()
+        site = runtime.site_packages(usb_root, os_name)
+        results[str(site.relative_to(usb_root)) + "/"] = site.is_dir()
+        if want_llama:
+            server = "llama-server.exe" if os_name == "windows" else "llama-server"
+            for backend, _, _ in runtime.LLAMA_ASSETS[os_name]:
+                path = runtime.llama_dir(usb_root, os_name, backend) / server
+                results[str(path.relative_to(usb_root))] = path.is_file()
     return results
 
 # ---------------------------------------------------------------------------
@@ -699,8 +681,9 @@ def main() -> None:
     recommended = recommend_for_ram(host_ram)
     console.print(f"  Recommended model  : [bold]{recommended['name']}[/bold] ({recommended['description']})\n")
 
-    want_win   = _confirm("  Bundle portable Python for Windows? (~400 MB, no Python needed on host)", default=True)
-    want_linux = _confirm("  Bundle Linux packages? (~200 MB, no pip install on host)", default=True)
+    want_win   = _confirm("  Bundle Windows runtime? (Python + packages, ~250 MB — nothing to install on the PC)", default=True)
+    want_linux = _confirm("  Bundle Linux runtime? (Python + packages, ~300 MB — nothing to install on the PC)", default=True)
+    want_llama = _confirm("  Bundle llama.cpp for local models? (Vulkan GPU + CPU, ~140 MB per OS)", default=True)
     want_prov  = _confirm("  Include LLM provider SDKs? (anthropic, openai, google-auth)", default=True)
     want_tools = _confirm("  Include agent tools? (pyautogui, pyperclip)", default=True)
     want_voice    = _confirm("  Include voice pipeline? (assemblyai, elevenlabs, Pillow)", default=False)
@@ -799,9 +782,11 @@ def main() -> None:
     # Disk space estimate
     est_gb = 0.2  # carry-ai source
     if want_linux:
-        est_gb += 0.3 + (0.3 if want_prov else 0) + (0.1 if want_voice else 0)
+        est_gb += 0.15 + 0.15 + (0.3 if want_prov else 0) + (0.1 if want_voice else 0)
     if want_win:
-        est_gb += 0.4 + (0.3 if want_prov else 0) + 0.1  # portable python
+        est_gb += 0.1 + 0.15 + (0.3 if want_prov else 0) + (0.1 if want_voice else 0)
+    if want_llama:
+        est_gb += 0.19 * want_linux + 0.14 * want_win
     est_gb += sum(m["size_gb"] for m in chosen_models)
 
     console.print(f"\n  Estimated USB usage : [bold]~{est_gb:.1f} GB[/bold]")
@@ -824,25 +809,17 @@ def main() -> None:
     console.print("\n[bold]3b.[/bold] Writing launcher scripts ...")
     write_launcher_scripts(usb_root)
 
-    # 3c — Linux packages
-    if want_linux:
-        console.print("\n[bold]3c.[/bold] Installing Linux packages ...")
-        linux_site = usb_root / "python-env" / "linux" / "site-packages"
-        failed_linux = install_packages(packages, linux_site)
-        if failed_linux:
-            console.print(f"  [yellow]⚠ Failed:[/yellow] {', '.join(failed_linux)}")
-
-    # 3d — Windows portable Python + packages
-    if want_win:
-        console.print("\n[bold]3d.[/bold] Setting up Windows portable Python ...")
-        win_dir = usb_root / "python-env" / "windows"
-        ok = setup_portable_python_windows(win_dir)
-        if ok:
-            console.print("\n  Installing packages into portable Python ...")
-            win_site = win_dir / "Lib" / "site-packages"
-            failed_win = install_packages(packages, win_site, python_exe=win_dir / "python.exe")
-            if failed_win:
-                console.print(f"  [yellow]⚠ Failed:[/yellow] {', '.join(failed_win)}")
+    # 3c/3d — per-OS runtime: Python, packages, llama.cpp
+    for step, os_name, wanted in (("3c", "linux", want_linux), ("3d", "windows", want_win)):
+        if not wanted:
+            continue
+        console.print(f"\n[bold]{step}.[/bold] {os_name.capitalize()} runtime ...")
+        if setup_portable_python(usb_root, os_name):
+            failed = install_packages(packages, usb_root, os_name)
+            if failed:
+                console.print(f"  [yellow]⚠ Failed:[/yellow] {', '.join(failed)}")
+        if want_llama:
+            setup_llama_server(usb_root, os_name)
 
     # 3e — GGUF models
     if chosen_models:
@@ -865,7 +842,8 @@ def main() -> None:
     # ── STEP 4: Verify ───────────────────────────────────────────────────────
     _step(4, "Verification")
 
-    results = verify_flash(usb_root, want_win=want_win, want_linux=want_linux)
+    results = verify_flash(usb_root, want_win=want_win, want_linux=want_linux,
+                           want_llama=want_llama)
     all_ok = True
     for check, passed in results.items():
         icon = "[green]✓[/green]" if passed else "[red]✗[/red]"
@@ -884,9 +862,10 @@ def main() -> None:
         f"Total size:  ~{total_mb/1024:.1f} GB\n\n"
         "To launch carry-ai from the USB:\n\n"
         "  Windows  →  insert USB, double-click start.bat\n"
-        "              (no Python required — portable Python is bundled)\n\n"
+        "              (nothing to install — Python is bundled)\n\n"
         "  Linux    →  insert USB, open terminal:\n"
-        "              bash /media/<user>/<drive>/start.sh\n\n"
+        "              bash /media/<user>/<drive>/start.sh\n"
+        "              (nothing to install — Python is bundled)\n\n"
     )
     if want_voice:
         body += (

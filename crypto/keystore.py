@@ -248,6 +248,46 @@ class KeyStore:
             return {}
         return dict(self._secrets.get(provider, {}))
 
+    def decrypt_interactive(self, max_attempts: int = 3) -> dict:
+        """Prompt for the passphrase, unlock, and return ``{provider: api_key}``.
+
+        Used at boot by launcher.py and the desktop app. Returns an empty
+        dict if the keystore file is missing/empty. Raises ValueError if the
+        passphrase is wrong after *max_attempts* tries.
+        """
+        if not os.path.isfile(self.enc_path):
+            return {}
+        content = ""
+        try:
+            with open(self.enc_path, "r", encoding="utf-8") as f:
+                content = f.read().strip()
+        except OSError:
+            return {}
+        if not content or content.startswith("#"):
+            return {}  # placeholder file, no real keys yet
+
+        for attempt in range(1, max_attempts + 1):
+            passphrase = getpass.getpass("  Keystore passphrase: ")
+            try:
+                if self.unlock(passphrase):
+                    break
+                return {}
+            except ValueError:
+                remaining = max_attempts - attempt
+                if remaining:
+                    print(f"  Wrong passphrase — {remaining} attempt(s) left.")
+                else:
+                    raise
+
+        # Flatten to {provider: api_key} — what the boot context and
+        # providers expect. Providers needing extra fields read the keystore.
+        flat: dict[str, str] = {}
+        for provider in self.list_providers():
+            key = self.get(provider, "api_key")
+            if key:
+                flat[provider] = key
+        return flat
+
     def list_providers(self) -> list:
         """List provider names that have stored keys."""
         if not self._unlocked:

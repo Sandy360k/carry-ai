@@ -262,6 +262,9 @@ def _detect_session_dir() -> Path:
         temp = os.environ.get("TEMP", os.environ.get("TMP", "C:\\Temp"))
         return Path(temp) / "ai_session"
     else:
+        preset = os.environ.get("CARRY_AI_SESSION_DIR")
+        if preset and Path(preset).name == "ai_session":
+            return Path(preset)
         shm = Path("/dev/shm/ai_session")
         return shm if shm.exists() else Path("/tmp/ai_session")
 
