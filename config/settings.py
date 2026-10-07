@@ -37,7 +37,7 @@ DEFAULTS = {
         "groq":       {"enabled": True,  "model": "openai/gpt-oss-20b"},
         "openrouter": {"enabled": True,  "model": "openrouter/free"},
         "godmode":    {"enabled": False, "model": "anthropic/claude-opus-5.5",
-                       "base_url": "http://localhost:3000/v1",
+                       "base_url": "http://localhost:7860/v1",
                        "autotune": False, "stm_modules": []},
         "onyx":       {"enabled": False, "model": "onyx/default",
                        "base_url": "http://localhost:3000/api"},
@@ -77,6 +77,25 @@ DEFAULTS = {
         "sharing_enabled": False,
         "team_name": "",
         "session_ttl_minutes": 60,
+    },
+
+    # Hugging Face sign-in (models/hf_auth.py). oauth_client_id is the id of
+    # a *public* OAuth app (no secret, scope "gated-repos") registered once
+    # at https://huggingface.co/settings/applications/new. Empty = the
+    # "Sign in" button explains how to set it up; pasting a token still works.
+    "huggingface": {
+        "oauth_client_id": "",
+    },
+
+    # Peripheral features, off by default. They don't fit the disposable,
+    # offline-first USB session (extra services, host installs, or shared
+    # state) and are opt-in. Enable in settings.json, e.g.
+    #   {"experimental": {"onyx": true}}
+    "experimental": {
+        "godmode": False,           # providers/godmode_provider.py (model racing)
+        "onyx": False,              # providers/onyx_provider.py (RAG search)
+        "google_workspace": False,  # integrations/gworkspace_tools.py (needs gws CLI)
+        "cowork": False,            # cowork/ (team session sharing)
     },
 
     "cleanup": {
@@ -308,3 +327,17 @@ def get_default_settings() -> dict:
 def load_settings(usb_root: str = None, cli_overrides: dict = None) -> Settings:
     """Convenience wrapper for Settings.load()."""
     return Settings.load(usb_root=usb_root, cli_overrides=cli_overrides)
+
+
+def is_experimental_enabled(feature: str, usb_root: str = None) -> bool:
+    """True if a peripheral feature is opted in via ``experimental.<feature>``.
+
+    Safe to call from anywhere (returns False on any load error) so gate
+    points stay one-liners. See the ``experimental`` block in DEFAULTS.
+    """
+    try:
+        exp = load_settings(usb_root=usb_root).to_dict().get("experimental", {})
+        return bool(exp.get(feature, False))
+    except Exception as e:
+        logger.debug("experimental flag check failed for %s: %s", feature, e)
+        return False

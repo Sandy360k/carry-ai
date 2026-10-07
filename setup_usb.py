@@ -108,6 +108,7 @@ CORE_PACKAGES = [
     "requests>=2.31.0",
     "rich>=13.7.0",
     "customtkinter>=5.2.0",
+    "qrcode>=7.4",
 ]
 PROVIDER_PACKAGES = [
     "anthropic>=0.30.0",

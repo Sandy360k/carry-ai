@@ -15,9 +15,18 @@ Features (from Onyx):
     - Lite mode: Under 1GB RAM, chat-only
 
 Architecture:
-    Onyx exposes an OpenAI-compatible /api/chat endpoint. This provider
-    wraps it so carry-ai can route queries through Onyx for RAG-enhanced
-    answers grounded in the user's actual data.
+    Onyx (v4.x) answers via ``POST {base}/chat/send-chat-message``
+    (backend/onyx/server/query_and_chat/chat_backend.py). Request:
+        {message, stream, chat_session_id | chat_session_info:{persona_id},
+         internal_search_filters:{document_set:[...]}, deep_research}
+    stream=false returns ChatFullResponse JSON
+        {answer, top_documents[], citation_info[], chat_session_id, error_msg}
+    stream=true returns newline-delimited JSON packets, e.g.
+        {"chat_session_id": "..."}                                (new session)
+        {"placement": {...}, "obj": {"type": "message_delta", "content": "..."}}
+        {"error": "..."}
+    Onyx keeps the conversation server-side, so only the newest user
+    message is sent and the chat_session_id is reused for follow-ups.
 
 Setup:
     1. Deploy Onyx (Docker): docker compose up -d
@@ -58,14 +67,36 @@ log = logging.getLogger("carry-ai.providers.onyx")
 # Default Onyx instance URL
 ONYX_BASE_URL = "http://localhost:3000/api"
 
-# Onyx-specific persona (agent) IDs
-DEFAULT_PERSONA = 0  # Default assistant
+# Onyx persona (agent) ID; 0 = the default assistant.
+DEFAULT_PERSONA = 0
 
 AVAILABLE_MODELS = [
     "onyx/default",          # Default RAG assistant
-    "onyx/research",         # Deep research mode
-    "onyx/code",             # Code-aware assistant
+    "onyx/research",         # Deep research mode (deep_research=true)
 ]
+
+SEND_PATH = "/chat/send-chat-message"
+
+
+def _latest_user_text(messages: list[dict]) -> str:
+    for m in reversed(messages):
+        if m.get("role") == "user":
+            content = m.get("content", "")
+            if isinstance(content, list):          # multimodal parts
+                content = " ".join(p.get("text", "") for p in content
+                                   if isinstance(p, dict) and p.get("type") == "text")
+            return str(content or "")
+    return ""
+
+
+def _source_names(docs) -> list[str]:
+    names = []
+    for d in docs or []:
+        if isinstance(d, dict):
+            name = d.get("semantic_identifier") or d.get("link") or ""
+            if name:
+                names.append(str(name))
+    return list(dict.fromkeys(names))[:5]
 
 
 class OnyxProvider(BaseProvider):
@@ -80,13 +111,8 @@ class OnyxProvider(BaseProvider):
             api_key="onyx-api-key",
             base_url="http://localhost:3000/api",
         )
-        # Standard RAG query (searches connected sources)
-        response = provider.chat(messages)
-
-        # Deep research mode
-        response = provider.chat(messages, persona="research")
-
-        # Query specific data sources
+        response = provider.chat(messages)                       # RAG answer
+        response = provider.chat(messages, model="onyx/research")  # deep research
         response = provider.chat(messages, document_sets=["company-docs"])
     """
 
@@ -96,8 +122,10 @@ class OnyxProvider(BaseProvider):
             raise ImportError("'requests' library required. pip install requests")
         self._api_key = api_key
         self._base_url = (base_url or ONYX_BASE_URL).rstrip("/")
-        self._persona_id = persona_id or DEFAULT_PERSONA
+        self._persona_id = DEFAULT_PERSONA if persona_id is None else persona_id
         self._session = _requests.Session()
+        # Server-side conversation for multi-turn; reset on a new conversation.
+        self._chat_session_id: str | None = None
 
     @property
     def provider_name(self) -> str:
@@ -109,80 +137,36 @@ class OnyxProvider(BaseProvider):
             h["Authorization"] = f"Bearer {self._api_key}"
         return h
 
-    def chat(self, messages: list[dict], **kwargs) -> ChatResponse:
-        """Send a chat request through Onyx's RAG pipeline.
+    def reset_session(self) -> None:
+        """Forget the Onyx chat session; the next message starts a new one."""
+        self._chat_session_id = None
 
-        Onyx will:
-        1. Search connected data sources for relevant context
-        2. Build a grounded prompt with retrieved documents
-        3. Generate a response using the configured LLM
-        4. Return the answer with source citations
-
-        Args:
-            messages: OpenAI-format message list.
-            persona: Onyx persona/agent name ("default", "research", "code").
-            document_sets: List of document set names to search.
-            retrieval_options: Dict of retrieval config overrides.
-
-        Returns:
-            ChatResponse with RAG-grounded content.
-        """
-        url = f"{self._base_url}/chat/send-message"
-
-        # Extract the latest user message
-        user_msg = ""
-        for m in reversed(messages):
-            if m.get("role") == "user":
-                user_msg = m.get("content", "")
-                break
-
-        # Build Onyx-specific payload
+    def _build_payload(self, messages: list[dict], stream: bool, kwargs: dict) -> dict:
+        model = kwargs.pop("model", None) or ""
         persona = kwargs.pop("persona", None)
         document_sets = kwargs.pop("document_sets", None)
-        retrieval_options = kwargs.pop("retrieval_options", None)
+        deep_research = bool(kwargs.pop("deep_research", False)
+                             or persona == "research" or model == "onyx/research")
+        persona_id = kwargs.pop("persona_id", self._persona_id)
 
-        payload = {
-            "message": user_msg,
-            "persona_id": self._persona_id,
-            "prompt_id": 0,
-            "retrieval_options": retrieval_options or {
-                "run_search": "auto",
-                "real_time": True,
-            },
+        # A history with no earlier assistant turn is a new conversation.
+        if not any(m.get("role") == "assistant" for m in messages):
+            self._chat_session_id = None
+
+        payload: dict = {
+            "message": _latest_user_text(messages),
+            "stream": stream,
+            "deep_research": deep_research,
         }
-
+        if self._chat_session_id:
+            payload["chat_session_id"] = self._chat_session_id
+        else:
+            payload["chat_session_info"] = {"persona_id": persona_id}
         if document_sets:
-            payload["retrieval_options"]["document_sets"] = document_sets
+            payload["internal_search_filters"] = {"document_set": list(document_sets)}
+        return payload
 
-        # Map persona names to IDs if needed
-        if persona == "research":
-            payload["persona_id"] = 1
-        elif persona == "code":
-            payload["persona_id"] = 2
-
-        # Include chat history for multi-turn
-        if len(messages) > 1:
-            history = []
-            for m in messages[:-1]:  # All except latest
-                if m.get("role") in ("user", "assistant"):
-                    history.append({
-                        "message": m.get("content", ""),
-                        "message_type": "user" if m["role"] == "user" else "assistant",
-                    })
-            if history:
-                payload["chat_session_id"] = None  # New session
-                payload["parent_message_id"] = None
-
-        try:
-            resp = self._session.post(
-                url, json=payload, headers=self._headers(),
-                timeout=kwargs.get("timeout", 120),
-            )
-        except _requests.ConnectionError as e:
-            raise ProviderError(f"onyx: connection failed: {e}", provider="onyx")
-        except _requests.Timeout:
-            raise ProviderError("onyx: request timed out", provider="onyx")
-
+    def _check_status(self, resp) -> None:
         if resp.status_code in (401, 403):
             raise AuthenticationError("onyx: invalid API key", provider="onyx")
         if resp.status_code == 429:
@@ -195,88 +179,98 @@ class OnyxProvider(BaseProvider):
                 provider="onyx", status_code=resp.status_code,
             )
 
-        # Parse Onyx response (may be streaming NDJSON)
-        content = ""
-        sources = []
+    def _post(self, payload: dict, timeout: float, stream: bool):
         try:
-            # Onyx streams responses as newline-delimited JSON
-            for line in resp.text.strip().split("\n"):
-                if not line.strip():
-                    continue
-                try:
-                    data = json.loads(line)
-                    if "answer_piece" in data:
-                        content += data["answer_piece"] or ""
-                    if "source_documents" in data:
-                        for doc in data["source_documents"]:
-                            sources.append(doc.get("semantic_identifier", ""))
-                except json.JSONDecodeError:
-                    content += line
-        except Exception:
-            content = resp.text
+            resp = self._session.post(
+                f"{self._base_url}{SEND_PATH}", json=payload,
+                headers=self._headers(), timeout=timeout, stream=stream,
+            )
+        except _requests.ConnectionError as e:
+            raise ProviderError(f"onyx: connection failed: {e}", provider="onyx")
+        except _requests.Timeout:
+            raise ProviderError("onyx: request timed out", provider="onyx")
+        self._check_status(resp)
+        return resp
 
-        # Append source citations
+    def chat(self, messages: list[dict], **kwargs) -> ChatResponse:
+        """Send a chat request through Onyx's RAG pipeline (stream=false).
+
+        Args:
+            messages: OpenAI-format message list (only the newest user turn
+                is sent; Onyx holds the history in its chat session).
+            model: "onyx/default" or "onyx/research" (deep research).
+            persona: "research" also enables deep research.
+            document_sets: Document set names to restrict the search to.
+
+        Returns:
+            ChatResponse with RAG-grounded content and source names appended.
+        """
+        timeout = kwargs.pop("timeout", 120)
+        model = kwargs.get("model") or "onyx/default"
+        payload = self._build_payload(messages, False, kwargs)
+        resp = self._post(payload, timeout, stream=False)
+
+        try:
+            data = resp.json()
+        except ValueError:
+            raise ProviderError("onyx: non-JSON response", provider="onyx")
+        if data.get("error_msg"):
+            raise ProviderError(f"onyx: {data['error_msg']}", provider="onyx")
+        if data.get("chat_session_id"):
+            self._chat_session_id = str(data["chat_session_id"])
+
+        content = data.get("answer") or ""
+        sources = _source_names(data.get("top_documents"))
         if sources:
-            unique_sources = list(dict.fromkeys(sources))[:5]
-            content += "\n\n**Sources:** " + ", ".join(unique_sources)
+            content += "\n\n**Sources:** " + ", ".join(sources)
 
         return ChatResponse(
             role="assistant",
             content=content,
             provider="onyx",
-            model=f"onyx/{persona or 'default'}",
+            model=model if model in AVAILABLE_MODELS else "onyx/default",
             usage={"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
         )
 
     def stream(self, messages: list[dict], **kwargs):
         """Stream a RAG response from Onyx.
 
-        Yields chunks as Onyx processes the query through its
-        retrieval + generation pipeline.
+        Parses newline-delimited JSON packets and yields
+        ``{"type": "content", "data": str}`` chunks, then ``{"type": "done"}``.
         """
-        url = f"{self._base_url}/chat/send-message"
+        timeout = kwargs.pop("timeout", 120)
+        payload = self._build_payload(messages, True, kwargs)
+        resp = self._post(payload, timeout, stream=True)
 
-        user_msg = ""
-        for m in reversed(messages):
-            if m.get("role") == "user":
-                user_msg = m.get("content", "")
-                break
-
-        payload = {
-            "message": user_msg,
-            "persona_id": self._persona_id,
-            "prompt_id": 0,
-            "retrieval_options": {"run_search": "auto", "real_time": True},
-        }
-
-        try:
-            resp = self._session.post(
-                url, json=payload, headers=self._headers(),
-                timeout=kwargs.get("timeout", 120), stream=True,
-            )
-        except Exception as e:
-            raise ProviderError(f"onyx: {e}", provider="onyx")
-
-        if resp.status_code != 200:
-            raise ProviderError(
-                f"onyx: HTTP {resp.status_code}",
-                provider="onyx", status_code=resp.status_code,
-            )
-
+        sources: list[str] = []
         for line in resp.iter_lines(decode_unicode=True):
-            if not line:
+            if not line or not line.strip():
                 continue
+            if line.startswith("data:"):              # tolerate SSE framing
+                line = line[5:].strip()
             try:
                 data = json.loads(line)
-                if "answer_piece" in data and data["answer_piece"]:
-                    yield {"type": "content", "data": data["answer_piece"]}
-                if "source_documents" in data:
-                    sources = [d.get("semantic_identifier", "") for d in data["source_documents"]]
-                    if sources:
-                        yield {"type": "content", "data": f"\n\n**Sources:** {', '.join(sources[:5])}"}
             except json.JSONDecodeError:
-                yield {"type": "content", "data": line}
+                continue
+            if not isinstance(data, dict):
+                continue
+            if data.get("chat_session_id"):
+                self._chat_session_id = str(data["chat_session_id"])
+            if data.get("error"):
+                raise ProviderError(f"onyx: {data['error']}", provider="onyx")
+            obj = data.get("obj")
+            if not isinstance(obj, dict):
+                continue
+            kind = obj.get("type")
+            if kind == "message_delta" and obj.get("content"):
+                yield {"type": "content", "data": obj["content"]}
+            elif kind == "message_start":
+                sources = _source_names(obj.get("final_documents")) or sources
+            elif kind == "search_tool_documents_delta" and not sources:
+                sources = _source_names(obj.get("documents"))
 
+        if sources:
+            yield {"type": "content", "data": "\n\n**Sources:** " + ", ".join(sources)}
         yield {"type": "done", "data": None}
 
     def is_available(self) -> bool:
@@ -328,5 +322,6 @@ class OnyxProvider(BaseProvider):
 
     def shutdown(self) -> None:
         """Close the HTTP session."""
+        self._chat_session_id = None
         self._session.close()
         self._api_key = ""

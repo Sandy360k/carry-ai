@@ -794,11 +794,18 @@ def create_app(agent=None, config=None):
         return jsonify({"plugins": [], "status": "Plugin system not yet loaded"})
 
     # ------------------------------------------------------------------
-    # Cowork sessions (placeholder)
+    # Cowork sessions (experimental — team session sharing doesn't fit the
+    # disposable, anonymous USB session; opt in via experimental.cowork)
     # ------------------------------------------------------------------
+    try:
+        from config.settings import is_experimental_enabled
+        _cowork_on = is_experimental_enabled("cowork")
+    except Exception:
+        _cowork_on = False
 
-    @app.route("/api/cowork/sessions")
-    def api_cowork_sessions():
-        return jsonify({"sessions": [], "status": "No shared sessions"})
+    if _cowork_on:
+        @app.route("/api/cowork/sessions")
+        def api_cowork_sessions():
+            return jsonify({"sessions": [], "status": "No shared sessions"})
 
     return app

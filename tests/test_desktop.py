@@ -82,7 +82,9 @@ def test_backend_replays_history_only_on_conversation_switch(monkeypatch):
     assert be._agent.loaded == []             # switched → reload (fresh)
 
 
-def test_local_mode_does_not_forward_provider(monkeypatch):
+def test_local_choice_routes_to_local_without_model(monkeypatch):
+    # "local" goes to the agent (hybrid sessions use it to pick llama-server);
+    # the cloud model name is not forwarded.
     import agent.agent as agentmod
 
     def _make(boot_context=None):
@@ -92,7 +94,7 @@ def test_local_mode_does_not_forward_provider(monkeypatch):
     monkeypatch.setattr(agentmod, "Agent", _make)
     be = desktop.ChatBackend()
     be._run_agent("c", [], "hello", "local", "ignored")
-    assert be._agent.seen == {"msg": "hello", "provider": None, "model": None}
+    assert be._agent.seen == {"msg": "hello", "provider": "local", "model": None}
 
 
 def test_permission_request_marshals_through_queue(monkeypatch):
@@ -116,3 +118,14 @@ def test_permission_request_marshals_through_queue(monkeypatch):
     req["event"].set()
     t.join(timeout=5)
     assert not t.is_alive()
+
+
+def test_menu_providers_lists_keyed_cloud_providers(monkeypatch):
+    monkeypatch.setattr(desktop.ChatBackend, "preloaded_keys",
+                        {"groq": {"api_key": "gsk_x"}, "huggingface": {"api_key": "hf"}})
+    monkeypatch.setattr(desktop.ChatBackend, "boot_context", {"mode": "api"})
+    assert [p["key"] for p in desktop.menu_providers()] == ["groq", "local"]
+    monkeypatch.setattr(desktop.ChatBackend, "boot_context", {"mode": "local"})
+    assert [p["key"] for p in desktop.menu_providers()] == ["local", "groq"]
+    assert desktop.ChatBackend.key_for("huggingface") == "hf"
+    assert desktop.ChatBackend.key_for("openai") == ""

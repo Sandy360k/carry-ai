@@ -1,8 +1,32 @@
 # API Provider Setup
 
-carry-ai supports 7 LLM providers plus 2 voice service integrations. All chat providers participate in an automatic failover chain: if your primary provider returns a rate-limit, auth error, or overload response, carry-ai tries the next healthy provider in the chain without interrupting your conversation.
+carry-ai supports 12 LLM providers (10 in the catalogue `providers/catalog.py` plus the experimental G0DM0D3 and Onyx) and 2 voice service integrations. All chat providers participate in an automatic failover chain: if your primary provider returns a rate-limit, auth error, or overload response, carry-ai tries the next healthy provider in the chain without interrupting your conversation.
 
 Provider health is tracked per-session (success rate, average latency, consecutive failures). Providers with auth errors are skipped immediately; providers that are rate-limited are retried with exponential backoff before falling back.
+
+### Adding keys in the app
+
+The desktop app's **API Keys** window (and `onboard.py`) list every provider in `providers/catalog.py`, free-to-start ones first. For each one:
+
+- **Get key** shows the provider's key page as a QR code to open on your phone, a **Copy link** button (the clipboard is wiped on eject), or opens it in a throwaway private browser window. The host's own browser is never used.
+- **Test** makes one cheap authenticated call: `GET /models` for most providers, `GET /api/v1/key` for OpenRouter (its model list is public), `GET /v1/models` with `x-api-key` for Anthropic, and a 16-token chat request for NVIDIA. A 429 or 402 response still means the key is valid.
+- Pasted keys are cleaned up (`export FOO="…";` → `…`). Keys found in the environment are offered as "(detected)".
+- **Use this session** keeps keys in RAM only. **Save & remember** encrypts them into `config/providers.enc`.
+
+New keys take effect immediately. A local-only session becomes hybrid: the local model stays available as "Local (llama.cpp)" next to the cloud providers.
+
+### Free-tier providers (no credit card)
+
+| Provider | Base URL | Key page | Notes |
+|---|---|---|---|
+| OpenRouter | `https://openrouter.ai/api/v1` | https://openrouter.ai/settings/keys | `openrouter/free` routes to a free model with tool support; ~50 req/day |
+| Groq | `https://api.groq.com/openai/v1` | https://console.groq.com/keys | ~1000 req/day per model |
+| Google Gemini | native API (`providers/google_oauth.py`) | https://aistudio.google.com/apikey | free-tier prompts may be used for training |
+| Cerebras | `https://api.cerebras.ai/v1` | https://cloud.cerebras.ai | ~1M tokens/day |
+| Mistral | `https://api.mistral.ai/v1` | https://console.mistral.ai/api-keys | "Experiment" plan: phone verification, data used for training |
+| NVIDIA NIM | `https://integrate.api.nvidia.com/v1` | https://build.nvidia.com/settings/api-keys | ~40 req/min, phone verification |
+
+Paid additions: DeepSeek (`https://api.deepseek.com`, https://platform.deepseek.com/api_keys) and xAI (`https://api.x.ai/v1`, https://console.x.ai). The free tiers were checked in October 2026 against cheahjs/free-llm-api-resources and each provider's docs. They change often. GitHub Models (retired July 2026) and Together (no free tier) are not included.
 
 ### Model discovery (why the lists below are only a fallback)
 
@@ -145,27 +169,27 @@ python crypto/keystore.py add openrouter
 
 G0DM0D3 is a multi-model AI gateway that races queries across many models simultaneously and returns the best response. carry-ai integrates it as a provider via its OpenAI-compatible endpoint.
 
-**Three operating modes:**
+**Operating modes** (virtual model names are passed to the server unchanged; tiers are `fast` (10 models), `standard` (24), `smart` (36), `power` (45), `ultra` (51) — higher tiers need a Pro/Enterprise G0DM0D3 key):
 
 | Mode | Virtual model name | What it does |
 |------|--------------------|-------------|
-| **ULTRAPLINIAN fast** | `ultraplinian/fast` | Races 10 fast models in parallel, returns the winner |
-| **ULTRAPLINIAN smart** | `ultraplinian/smart` | Races 20 quality models |
-| **ULTRAPLINIAN all** | `ultraplinian/all` | Races all 51 models |
-| **CONSORTIUM default** | `consortium/default` | Collects responses from top 10 models, synthesizes a ground-truth answer |
-| **CONSORTIUM deep** | `consortium/deep` | Synthesizes from top 20 models |
+| **ULTRAPLINIAN** | `ultraplinian/<tier>` (e.g. `ultraplinian/fast`) | Races the tier's models in parallel, returns the winner |
+| **CONSORTIUM** | `consortium/<tier>` (e.g. `consortium/smart`) | Collects every response in the tier, synthesizes a ground-truth answer |
+| **Single model** | any OpenRouter model ID | Plain OpenAI-compatible completion |
 | **AutoTune** | any model | Auto-detects query context (code, creative, analytical, etc.) and optimizes sampling |
 
 **Setup:**
 
 ```bash
-# 1. Self-host G0DM0D3 (requires Docker)
-docker run -p 3000:3000 -e OPENROUTER_API_KEY=sk-or-... godmode
+# 1. Self-host the G0DM0D3 API (requires Docker; HF Spaces port 7860)
+docker run -p 7860:7860 -e OPENROUTER_API_KEY=sk-or-... g0dm0d3-api
 
 # 2. Add to keystore
 python crypto/keystore.py add godmode
-# Prompted for: api_key and base_url (default: http://localhost:3000/v1)
+# Prompted for: api_key and base_url (default: http://localhost:7860/v1)
 ```
+
+If the server has no `OPENROUTER_API_KEY`, carry-ai sends your OpenRouter key in the request body as `openrouter_api_key` (an `sk-or-...` value stored as the godmode `api_key` is used for this).
 
 Enable in `config/settings.json`:
 
@@ -174,7 +198,7 @@ Enable in `config/settings.json`:
   "providers": {
     "godmode": {
       "enabled": true,
-      "base_url": "http://localhost:3000/v1",
+      "base_url": "http://localhost:7860/v1",
       "autotune": false,
       "stm_modules": ["direct_mode"]
     }
@@ -182,7 +206,9 @@ Enable in `config/settings.json`:
 }
 ```
 
-**STM (Semantic Transformation Modules)** post-process model output: `hedge_reducer` removes filler phrases like "I think", `direct_mode` gets to the point, `casual_mode` relaxes formal tone, `concise_mode` shortens verbose responses.
+**STM (Semantic Transformation Modules)** post-process model output: `hedge_reducer` removes filler phrases like "I think", `direct_mode` gets to the point, `casual_mode` relaxes formal tone.
+
+**Safety defaults:** G0DM0D3 turns `godmode` (a jailbreak system prompt) and `parseltongue` (input obfuscation) **on** by default. carry-ai always sends `"godmode": false, "parseltongue": false`, plus your `autotune`/`stm_modules` settings, so none of that pipeline runs unless you set `providers.godmode.godmode` / `.parseltongue` to `true` yourself.
 
 ---
 
@@ -228,7 +254,7 @@ Enable in `config/settings.json`:
 }
 ```
 
-Available Onyx personas: `onyx/default` (general RAG), `onyx/research` (deep multi-step research), `onyx/code` (code-aware assistant).
+Available Onyx models: `onyx/default` (general RAG via the default persona) and `onyx/research` (sends `deep_research: true` for multi-step research). carry-ai talks to Onyx's `POST /api/chat/send-chat-message` endpoint and reuses the returned `chat_session_id` for follow-up turns.
 
 ---
 

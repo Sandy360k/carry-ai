@@ -18,6 +18,12 @@ Features (from GWS CLI):
     - Schema inspection for any endpoint
     - JSON output for all commands
 
+Command shape (gws v0.22, crates/google-workspace-cli):
+    gws <service> <resource> [<sub-resource>] <method> --params '<query JSON>' --json '<body JSON>'
+    e.g. gws gmail users messages list --params '{"userId":"me"}'
+    Resource paths are space-separated words (never "users.messages").
+    Helpers start with "+": gmail +send, sheets +append, calendar +agenda.
+
 Architecture:
     Each tool wraps a `gws` CLI command via subprocess. The GWS binary
     must be installed and authenticated on the host. All output is JSON,
@@ -47,8 +53,8 @@ def _run_gws(args: list[str], timeout: int = 30) -> str:
     """Run a gws command and return the output."""
     if not GWS_AVAILABLE:
         return ("Error: Google Workspace CLI (gws) not found on PATH.\n"
-                "Install: npm install -g @anthropic/gws-cli\n"
-                "  or: brew install gws\n"
+                "Install: npm install -g @googleworkspace/cli\n"
+                "  or a binary from github.com/googleworkspace/cli/releases\n"
                 "Auth:  gws auth login")
 
     cmd = [GWS_BINARY] + args
@@ -116,11 +122,15 @@ def _tool_gdrive_upload(file_path: str, folder_id: str = "",
         folder_id: Optional Drive folder ID to upload into.
         name: Optional name for the file in Drive.
     """
-    args = ["drive", "files", "create", "--upload", file_path]
-    if folder_id:
-        args.extend(["--params", json.dumps({"parents": [folder_id]})])
+    metadata: dict = {}
     if name:
-        args.extend(["--params", json.dumps({"name": name})])
+        metadata["name"] = name
+    if folder_id:
+        metadata["parents"] = [folder_id]
+    args = ["drive", "files", "create"]
+    if metadata:                      # file metadata is the request body
+        args.extend(["--json", json.dumps(metadata)])
+    args.extend(["--upload", file_path])
     return _run_gws(args, timeout=120)
 
 
@@ -131,7 +141,9 @@ def _tool_gdrive_download(file_id: str, output_path: str = "") -> str:
         file_id: Drive file ID to download.
         output_path: Local path to save the file.
     """
-    args = ["drive", "files", "get", "--params", json.dumps({"fileId": file_id})]
+    # alt=media returns the file content instead of its metadata.
+    args = ["drive", "files", "get",
+            "--params", json.dumps({"fileId": file_id, "alt": "media"})]
     if output_path:
         args.extend(["--output", output_path])
     return _run_gws(args, timeout=120)
@@ -145,7 +157,7 @@ def _tool_gmail_search(query: str, max_results: int = 10) -> str:
             Examples: "from:boss subject:meeting", "is:unread", "label:inbox newer_than:1d"
         max_results: Maximum messages to return.
     """
-    args = ["gmail", "users.messages", "list",
+    args = ["gmail", "users", "messages", "list",
             "--params", json.dumps({
                 "userId": "me",
                 "q": query,
@@ -182,7 +194,7 @@ def _tool_gmail_read(message_id: str) -> str:
     Args:
         message_id: Gmail message ID (from search results).
     """
-    args = ["gmail", "users.messages", "get",
+    args = ["gmail", "users", "messages", "get",
             "--params", json.dumps({
                 "userId": "me",
                 "id": message_id,
@@ -198,7 +210,7 @@ def _tool_gsheets_read(spreadsheet_id: str, range_str: str = "Sheet1") -> str:
         spreadsheet_id: Spreadsheet ID (from URL).
         range_str: Cell range (e.g., "Sheet1!A1:D10", "Sheet1").
     """
-    args = ["sheets", "spreadsheets.values", "get",
+    args = ["sheets", "spreadsheets", "values", "get",
             "--params", json.dumps({
                 "spreadsheetId": spreadsheet_id,
                 "range": range_str,
@@ -220,23 +232,27 @@ def _tool_gsheets_append(spreadsheet_id: str, range_str: str,
     except json.JSONDecodeError:
         return f"Error: values must be valid JSON array of arrays. Got: {values[:100]}"
 
+    if not isinstance(parsed_values, list):
+        return "Error: values must be a JSON array of arrays (rows)."
     args = ["sheets", "+append",
-            "--spreadsheet-id", spreadsheet_id,
-            "--range", range_str,
-            "--values", json.dumps(parsed_values)]
+            "--spreadsheet", spreadsheet_id,
+            "--json-values", json.dumps(parsed_values)]
+    if range_str:
+        args.extend(["--range", range_str])
     return _run_gws(args)
 
 
-def _tool_gcalendar_agenda(days: int = 7, calendar_id: str = "primary") -> str:
+def _tool_gcalendar_agenda(days: int = 7, calendar_id: str = "") -> str:
     """View upcoming calendar events.
 
     Args:
         days: Number of days ahead to show (default 7).
-        calendar_id: Calendar ID (default: "primary").
+        calendar_id: Calendar name or ID to filter on. Empty (or "primary",
+            which +agenda can't match by name) shows all calendars.
     """
-    args = ["calendar", "+agenda",
-            "--days", str(days),
-            "--calendar-id", calendar_id]
+    args = ["calendar", "+agenda", "--days", str(days)]
+    if calendar_id and calendar_id != "primary":
+        args.extend(["--calendar", calendar_id])
     return _parse_json_output(_run_gws(args))
 
 
@@ -261,14 +277,13 @@ def _tool_gcalendar_create(summary: str, start: str, end: str,
         event["description"] = description
 
     args = ["calendar", "events", "insert",
-            "--params", json.dumps({
-                "calendarId": calendar_id,
-                "requestBody": event,
-            })]
+            "--params", json.dumps({"calendarId": calendar_id or "primary"}),
+            "--json", json.dumps(event)]
     return _run_gws(args)
 
 
-def _tool_gworkspace(service: str, method: str, params: str = "{}") -> str:
+def _tool_gworkspace(service: str, method: str, params: str = "{}",
+                     body: str = "") -> str:
     """Run any Google Workspace API call via the GWS CLI.
 
     This is a generic tool for accessing any Google Workspace API.
@@ -276,17 +291,30 @@ def _tool_gworkspace(service: str, method: str, params: str = "{}") -> str:
 
     Args:
         service: Google service (drive, gmail, sheets, calendar, docs, chat).
-        method: API method (e.g., "files.list", "users.messages.list").
-        params: JSON string of parameters.
+        method: API method (e.g., "files.list", "users.messages.list");
+            dots become the space-separated resource path gws expects.
+        params: JSON string of URL/query parameters (--params).
+        body: Optional JSON string request body (--json).
     """
     try:
         parsed = json.loads(params) if params else {}
     except json.JSONDecodeError:
         return f"Error: params must be valid JSON. Got: {params[:100]}"
+    parsed_body = None
+    if body:
+        try:
+            parsed_body = json.loads(body)
+        except json.JSONDecodeError:
+            return f"Error: body must be valid JSON. Got: {body[:100]}"
 
-    args = [service, method]
+    parts = [p for p in method.replace("/", ".").split(".") if p]
+    if not parts:
+        return "Error: method is required (e.g. 'files.list')."
+    args = [service, *parts]
     if parsed:
         args.extend(["--params", json.dumps(parsed)])
+    if parsed_body is not None:
+        args.extend(["--json", json.dumps(parsed_body)])
     return _parse_json_output(_run_gws(args, timeout=60))
 
 
@@ -409,7 +437,7 @@ def register_gworkspace_tools():
             "type": "object",
             "properties": {
                 "days": {"type": "integer", "description": "Days ahead to show", "default": 7},
-                "calendar_id": {"type": "string", "description": "Calendar ID", "default": "primary"},
+                "calendar_id": {"type": "string", "description": "Calendar name or ID (empty = all)", "default": ""},
             },
         },
         execute_fn=_tool_gcalendar_agenda,
@@ -436,14 +464,16 @@ def register_gworkspace_tools():
         name="gworkspace",
         description=(
             "Run any Google Workspace API call. Generic tool for Drive, Gmail, "
-            "Sheets, Calendar, Docs, Chat. Pass service name, method, and JSON params."
+            "Sheets, Calendar, Docs, Chat. Pass service name, dotted method "
+            "(e.g. 'users.messages.list'), JSON query params and optional JSON body."
         ),
         parameters={
             "type": "object",
             "properties": {
                 "service": {"type": "string", "description": "Google service (drive, gmail, sheets, calendar, docs, chat)"},
                 "method": {"type": "string", "description": "API method (e.g., 'files.list')"},
-                "params": {"type": "string", "description": "JSON parameters string", "default": "{}"},
+                "params": {"type": "string", "description": "JSON query/path parameters", "default": "{}"},
+                "body": {"type": "string", "description": "Optional JSON request body", "default": ""},
             },
             "required": ["service", "method"],
         },

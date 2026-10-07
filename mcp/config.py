@@ -63,11 +63,11 @@ class McpServerConfig:
     def validate(self) -> list:
         """Return list of validation errors (empty = valid)."""
         errors = []
-        if self.transport not in ("stdio", "sse", "http"):
+        if self.transport not in ("stdio", "sse", "http", "streamable-http"):
             errors.append(f"Unknown transport: {self.transport}")
         if self.transport == "stdio" and not self.command:
             errors.append("stdio transport requires 'command'")
-        if self.transport in ("sse", "http") and not self.url:
+        if self.transport in ("sse", "http", "streamable-http") and not self.url:
             errors.append(f"{self.transport} transport requires 'url'")
         if self.timeout_ms < 1000:
             errors.append(f"timeout_ms too low: {self.timeout_ms}")

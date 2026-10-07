@@ -120,12 +120,12 @@ Mode is auto-detected from what's available, or forced with `--mode`.
 
 - **Portable** — runs from USB, zero permanent install on the host machine
 - **Offline-capable** — local GGUF inference via llama.cpp, 12 RAM tiers auto-selected
-- **7 cloud providers** — Anthropic, OpenAI, Google, Groq, OpenRouter, G0DM0D3, Onyx
+- **5 cloud providers** — Anthropic, OpenAI, Google, Groq, OpenRouter (plus G0DM0D3 and Onyx behind the experimental flag)
 - **Automatic failover** — health-tracked provider chain with exponential backoff
 - **Voice mode** — push-to-talk → AssemblyAI transcription → Claude vision → ElevenLabs TTS
-- **30+ agent tools** — shell, files, web scraping, screenshots, clipboard, Google Workspace
+- **30+ agent tools** — shell, files, web scraping, screenshots, clipboard (Google Workspace behind the experimental flag)
 - **Persistent memory** — SQLite + FTS5, survives sessions, dedup + relevance decay
-- **MCP support** — connect any MCP server via stdio, HTTP, or SSE
+- **MCP support** — connect any MCP server via stdio or Streamable HTTP (MCP 2026-07-28; legacy HTTP+SSE still works)
 - **Plugin system** — manifest-based tools, hooks, and lifecycle scripts
 - **Encrypted keys** — Fernet + PBKDF2 (600k iterations), decrypted in RAM only
 - **Automatic cleanup** — 6-step wipe on exit or USB eject (processes, RAM session, browser profile, clipboard, recent files)
@@ -217,17 +217,25 @@ All voice dependencies are optional — carry-ai runs fully without them. Implem
 
 ## API Providers
 
-Seven providers with automatic failover and per-session health tracking (success rate, latency, consecutive failures):
+Ten cloud providers with automatic failover and per-session health tracking (success rate, latency, consecutive failures). Add keys in the desktop app with **API Keys** (or in `onboard.py`): each provider has a **Get key** button (QR code for your phone, or a throwaway private window) and a **Test** button. Keys stay in RAM unless you choose **Save & remember** (encrypted into `providers.enc` on the USB). Keys already in the environment (`OPENROUTER_API_KEY`, `GROQ_API_KEY`, …) are offered as "(detected)".
 
-| Provider | Models | Auth |
-|----------|--------|------|
-| **Anthropic** | Claude Opus 5, Sonnet 5, Haiku 4.5, Fable 5.1 | API key |
-| **OpenAI** | GPT-6 Luna / Sol / Astra, GPT-5.6 | API key |
-| **Google** | Gemini 3.8 Flash, 3.5 Flash-Lite, 3.1 Pro | API key or OAuth |
-| **Groq** | gpt-oss 20B / 120B, Qwen3.8 27B (vision) | API key |
-| **OpenRouter** | 450+ models incl. free ones (`openrouter/free`) | API key |
-| **G0DM0D3** | ULTRAPLINIAN racing, CONSORTIUM synthesis, AutoTune | API key |
-| **Onyx** | RAG-enhanced (50+ data connectors) | API key + Onyx instance |
+**Free to start — no credit card:**
+
+| Provider | Good free models | Free limits (Oct 2026, approx.) |
+|----------|------------------|------------------|
+| **OpenRouter** | `openrouter/free` (auto-picks a free model with tool support), Gemma 4 31B, Nemotron 3 Super | ~50 req/day (1000/day after a one-time $10 top-up) |
+| **Groq** | gpt-oss 20B / 120B, Llama 3.3 70B | ~1000 req/day per model |
+| **Google Gemini** | Gemini 3.5 Flash-Lite, 3.8 Flash | a few hundred req/day on Flash-Lite |
+| **Cerebras** | gpt-oss 120B | ~1M tokens/day |
+| **Mistral** | Mistral Small / Medium | "Experiment" plan (phone verification, prompts used for training) |
+| **NVIDIA NIM** | gpt-oss 20B, Nemotron 3 Super | ~40 req/min |
+
+**Paid:** Anthropic (Claude Opus 5 / Sonnet 5 / Haiku 4.5), OpenAI (GPT-6), DeepSeek, xAI (Grok).
+**Experimental:** G0DM0D3 ⚑ (multi-model racing), Onyx ⚑ (RAG over 50+ connectors).
+
+The list lives in `providers/catalog.py`; the providers there that speak the plain OpenAI API share `providers/generic_provider.py`.
+
+⚑ Experimental — off by default (needs an extra self-hosted service). Enable with `{"experimental": {"godmode": true}}` / `{"onyx": true}` in `config/settings.json`.
 
 Manage keys:
 ```bash
@@ -241,14 +249,14 @@ Keys are encrypted with Fernet (AES-128-CBC + HMAC-SHA256) using PBKDF2 (600,000
 
 See [`docs/providers.md`](docs/providers.md) for per-provider setup details.
 
-### G0DM0D3 — Multi-Model Racing
+### G0DM0D3 — Multi-Model Racing (experimental)
 
 Via [G0DM0D3](https://github.com/elder-plinius/G0DM0D3):
 - **ULTRAPLINIAN** — race 10–51 models in parallel, score and pick the best response
 - **CONSORTIUM** — collect all responses, synthesize a ground-truth answer
 - **AutoTune** — auto-detect query context (code / creative / analytical) and optimize sampling
 
-### Onyx — RAG Integration
+### Onyx — RAG Integration (experimental)
 
 Via [Onyx](https://github.com/onyx-dot-app/onyx):
 - Answers grounded in your organization's data (Google Drive, Slack, Confluence, Notion, GitHub, etc.)
@@ -283,6 +291,10 @@ python models/downloader.py local                # List downloaded models
 ```
 
 Dual backend (huggingface_hub or pure requests), resume support, quantization-aware sorting.
+
+**In the desktop app** the Model Manager labels every file with whether it fits this PC (free RAM + dedicated VRAM, including the KV cache) and warns before downloading one that doesn't.
+
+**Gated models (Gemma, Llama…)** — click **Sign in with Hugging Face** in the Model Manager. It shows a short code and a QR code; approve it on your phone and the token lands in the app (optionally saved, encrypted, in `providers.enc`). No browser opens on the host PC. If a model still needs its licence accepted, the app shows the model page as a QR code to agree on your phone, then **Check again** starts the download. This needs a one-time public OAuth app — set its id in `huggingface.oauth_client_id` (see [docs/configuration.md](docs/configuration.md)). Pasting a token still works without it.
 
 ---
 
@@ -332,7 +344,9 @@ Via [Scrapling](https://github.com/D4Vinci/Scrapling):
 - **Three tiers** — `Fetcher` (HTTP) → `StealthyFetcher` (headless + CF bypass) → `DynamicFetcher` (Playwright)
 - Falls back to `requests.get()` if not installed
 
-### Google Workspace
+### Google Workspace (experimental)
+
+> Off by default — needs the `gws` CLI installed on the host, which breaks the no-install model. Enable with `{"experimental": {"google_workspace": true}}` in `config/settings.json`.
 
 Via [GWS CLI](https://github.com/googleworkspace/cli): Drive, Gmail, Sheets, Calendar — auth once with `gws auth login`.
 
@@ -406,15 +420,15 @@ Connect external MCP servers for additional tools:
         "env": { "GITHUB_TOKEN": "$GITHUB_TOKEN" }
       },
       "web-search": {
-        "transport": "sse",
-        "url": "http://localhost:3001/sse"
+        "transport": "streamable-http",
+        "url": "http://localhost:3001/mcp"
       }
     }
   }
 }
 ```
 
-- **Transports** — stdio (subprocess), HTTP, SSE
+- **Transports** — stdio (subprocess) and Streamable HTTP (MCP 2026-07-28: stateless, no handshake, `MCP-Protocol-Version`/`Mcp-Method`/`Mcp-Name` headers). A `"transport": "sse"` entry is accepted but treated as Streamable HTTP, and the client falls back to the legacy `initialize` handshake for 2025-era servers.
 - **Auto-discovery** — tools registered as `mcp__{server}__{tool}`
 - **Thread-safe registry** — concurrent access from agent and UI threads
 - **Env var resolution** — `$VAR` references expanded at connect time
@@ -440,7 +454,9 @@ Extend carry-ai with manifest-based plugins:
 
 ---
 
-## Cowork Features
+## Cowork Features (experimental)
+
+> Off by default — team session sharing doesn't fit a disposable, anonymous USB session. Enable with `{"experimental": {"cowork": true}}` in `config/settings.json`.
 
 **Session Sharing**
 - JSON export (sanitized — API keys stripped, paths relativized)

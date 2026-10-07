@@ -126,6 +126,9 @@ class ProviderHealth:
 # Provider factory
 # ===================================================================
 
+# Credentials kept in the same keystore that are not chat providers.
+NON_CHAT_CREDENTIALS = frozenset({"huggingface", "assemblyai", "elevenlabs"})
+
 # Map of provider name -> (module_path, class_name)
 PROVIDER_REGISTRY = {
     "anthropic":  ("providers.anthropic_provider", "AnthropicProvider"),
@@ -149,8 +152,14 @@ def _instantiate_provider(name: str, keys: dict) -> BaseProvider | None:
         Provider instance, or None if import/init fails.
     """
     if name not in PROVIDER_REGISTRY:
-        log.warning("Unknown provider: %s", name)
-        return None
+        # Other providers in the catalogue speak the OpenAI schema.
+        try:
+            from providers.generic_provider import GenericOpenAIProvider
+            return GenericOpenAIProvider.from_catalog(
+                name, keys.get("api_key", ""), base_url=keys.get("base_url"))
+        except (ImportError, ValueError) as e:
+            log.warning("Unknown provider: %s (%s)", name, e)
+            return None
 
     module_path, class_name = PROVIDER_REGISTRY[name]
 
@@ -215,13 +224,25 @@ def load_providers(decrypted_keys: dict) -> dict[str, BaseProvider]:
         Dict of provider_name -> provider_instance (only successfully loaded ones).
     """
     providers = {}
+    # Peripheral providers are opt-in (see config experimental.*); skip
+    # them even if a key happens to be present, unless explicitly enabled.
+    experimental = {"godmode", "onyx"}
 
     for name, keys in decrypted_keys.items():
-        if name.startswith("_"):
-            continue  # Skip internal keys like _dry_run
+        if name.startswith("_") or name in NON_CHAT_CREDENTIALS:
+            continue  # Internal keys (_dry_run) and non-LLM credentials
         if not isinstance(keys, dict):
             log.debug("Skipping non-dict key entry: %s", name)
             continue
+        if name in experimental:
+            try:
+                from config.settings import is_experimental_enabled
+            except ImportError:
+                is_experimental_enabled = lambda *_a, **_k: False  # noqa: E731
+            if not is_experimental_enabled(name):
+                log.info("Provider '%s' is experimental and disabled; skipping. "
+                         "Enable with experimental.%s in settings.json.", name, name)
+                continue
 
         provider = _instantiate_provider(name, keys)
         if provider is not None:

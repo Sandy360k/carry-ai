@@ -112,11 +112,15 @@ Place this file at `config/settings.json` on the USB drive (next to `carry-ai/`)
       "enabled": false,
       "model": "anthropic/claude-opus-5.5",
       // Base URL for your local G0DM0D3 server (OpenAI-compatible).
-      "base_url": "http://localhost:3000/v1",
+      // (the G0DM0D3 API server listens on 7860; health check is GET <base_url>/health)
+      "base_url": "http://localhost:7860/v1",
       // autotune: let G0DM0D3 auto-detect query type and optimize sampling.
       "autotune": false,
-      // stm_modules: post-processing modules (e.g. "hedge_reducer", "direct_mode").
+      // stm_modules: post-processing modules ("hedge_reducer", "direct_mode", "casual_mode").
       "stm_modules": []
+      // carry-ai always sends "godmode": false and "parseltongue": false (both
+      // default to true server-side: a jailbreak system prompt and input
+      // obfuscation). Set either to true here only if you really want them.
     },
 
     "onyx": {
@@ -179,6 +183,25 @@ Place this file at `config/settings.json` on the USB drive (next to `carry-ai/`)
 
     "session_ttl_minutes": 60
     // How long a shared session URL stays active (minutes).
+  },
+
+  "huggingface": {
+    "oauth_client_id": ""
+    // Client id of a *public* Hugging Face OAuth app (no secret, scope
+    // "gated-repos"), registered once at
+    // https://huggingface.co/settings/applications/new.
+    // Enables "Sign in with Hugging Face" in the Model Manager: the user
+    // approves a short code on their phone, no browser opens on this PC.
+    // Empty = the button explains how to set it up; pasting a token works.
+  },
+
+  "experimental": {
+    // Peripheral features, off by default. They don't fit the disposable,
+    // offline-first USB session, so they're opt-in.
+    "godmode": false,           // G0DM0D3 multi-model racing provider
+    "onyx": false,              // Onyx RAG provider
+    "google_workspace": false,  // Drive/Gmail/Sheets tools (needs the gws CLI)
+    "cowork": false             // team session-sharing API
   },
 
   "cleanup": {
@@ -248,17 +271,23 @@ Launches a local process and communicates via stdin/stdout JSON-RPC. Use this fo
 
 `$VAR` references in the `env` block are expanded from the host environment at connect time.
 
-### HTTP / SSE
+### Streamable HTTP
 
-Connects to an already-running MCP server over HTTP. Use `"transport": "sse"` for servers that push events (most HTTP MCP servers), or `"transport": "http"` for pure request-response.
+Connects to an already-running MCP server over HTTP (MCP 2026-07-28). Use
+`"transport": "streamable-http"` (or `"http"`); a legacy `"sse"` entry is
+accepted and treated the same way. The client connects statelessly first
+(no `initialize` handshake; `MCP-Protocol-Version` / `Mcp-Method` /
+`Mcp-Name` headers and client identity in `_meta`), and falls back to the
+old `initialize` handshake for 2025-era servers. The response may be
+`application/json` or `text/event-stream` — both are handled.
 
 ```json
 {
   "mcp": {
     "servers": {
       "web-search": {
-        "transport": "sse",
-        "url": "http://localhost:3001/sse"
+        "transport": "streamable-http",
+        "url": "http://localhost:3001/mcp"
       },
       "custom-api": {
         "transport": "http",

@@ -29,7 +29,7 @@ import os
 import platform
 import re
 import subprocess
-import webbrowser
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -426,10 +426,17 @@ def _tool_web_fetch(url: str, max_length: int = 50000) -> str:
 
 
 def _tool_browse(url: str) -> str:
-    """Open a URL in the default browser."""
+    """Open a URL in a throwaway-profile browser window.
+
+    The host's default browser would keep the URL in its history after
+    eject; ui.browser.open_private puts the profile in the session dir.
+    """
     try:
-        webbrowser.open(url)
-        return f"Opened {url} in default browser"
+        from ui.browser import open_private
+        session_dir = (os.environ.get("CARRY_AI_SESSION_DIR")
+                       or os.path.join(tempfile.gettempdir(), "ai_session"))
+        how = open_private(url, session_dir)
+        return f"Opened {url} ({how})"
     except Exception as e:
         return f"Error opening browser: {e}"
 
@@ -668,10 +675,16 @@ def _register_integrations() -> None:
     except Exception as e:
         log.debug("Scrapling integration error: %s", e)
 
-    # Google Workspace CLI: adds gdrive_*, gmail_*, gsheets_*, gcalendar_* tools
+    # Google Workspace CLI: adds gdrive_*, gmail_*, gsheets_*, gcalendar_*
+    # tools. Opt-in — it needs a host-installed `gws` CLI, which doesn't fit
+    # the no-install USB model (see config experimental.google_workspace).
     try:
-        from integrations.gworkspace_tools import register_gworkspace_tools
-        register_gworkspace_tools()
+        from config.settings import is_experimental_enabled
+        if is_experimental_enabled("google_workspace"):
+            from integrations.gworkspace_tools import register_gworkspace_tools
+            register_gworkspace_tools()
+        else:
+            log.debug("Google Workspace integration disabled (experimental).")
     except ImportError:
         log.debug("Google Workspace integration not loaded (module not found)")
     except Exception as e:

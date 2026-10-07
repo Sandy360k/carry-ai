@@ -25,6 +25,7 @@ import platform
 import queue
 import re
 import sys
+import tempfile
 import threading
 import time
 import webbrowser
@@ -75,20 +76,21 @@ LIGHT = {
     "header_fg": "#1565c0",
 }
 
-PROVIDERS = [
-    {"name": "Anthropic (Claude)", "key": "anthropic",
-     "models": ["claude-opus-5", "claude-sonnet-5", "claude-haiku-4-5", "claude-fable-5-1"]},
-    {"name": "OpenAI", "key": "openai",
-     "models": ["gpt-6-luna", "gpt-6-sol", "gpt-6-astra"]},
-    {"name": "Google (Gemini)", "key": "google",
-     "models": ["gemini-3.5-flash-lite", "gemini-3.8-flash", "gemini-3.1-pro-preview"]},
-    {"name": "Groq", "key": "groq",
-     "models": ["openai/gpt-oss-20b", "openai/gpt-oss-120b", "qwen/qwen3.8-27b"]},
-    {"name": "OpenRouter", "key": "openrouter",
-     "models": ["openrouter/free", "openrouter/auto", "google/gemma-4-31b-it:free"]},
-    {"name": "Local (llama.cpp)", "key": "local",
-     "models": ["auto-detect"]},
-]
+LOCAL_PROVIDER = {"name": "Local (llama.cpp)", "key": "local", "models": ["auto-detect"]}
+ADD_KEY_ITEM = "+ Add API key…"
+
+
+def menu_providers() -> list[dict]:
+    """Sidebar provider list: cloud providers with a key this session, then local.
+
+    Driven by providers/catalog.py; keys are added in the API keys window.
+    """
+    from providers.catalog import PROVIDERS as CLOUD
+    out = [{"name": p.label, "key": p.key, "models": list(p.models) or [p.default_model]}
+           for p in CLOUD if ChatBackend.key_for(p.key)]
+    local_first = ChatBackend.boot_context.get("mode") == "local"
+    return [LOCAL_PROVIDER] + out if local_first else out + [LOCAL_PROVIDER]
+
 
 FONT_FAMILY = "Segoe UI" if platform.system() == "Windows" else "Helvetica"
 MONO_FAMILY = "Consolas" if platform.system() == "Windows" else "DejaVu Sans Mono"
@@ -129,6 +131,14 @@ class ChatBackend:
     # Agent is built from it so the desktop app shares the web UI's engine.
     boot_context: dict = {}
 
+    @classmethod
+    def key_for(cls, provider: str) -> str:
+        """API key for *provider* in this session ('' if none)."""
+        entry = cls.preloaded_keys.get(provider)
+        if isinstance(entry, dict):
+            return entry.get("api_key", "") or ""
+        return entry if isinstance(entry, str) else ""
+
     def __init__(self):
         self.response_queue: queue.Queue = queue.Queue()
         self._running = False
@@ -166,7 +176,8 @@ class ChatBackend:
         if self._agent is None:
             from agent.agent import Agent
             ctx = dict(self.boot_context)
-            if self.preloaded_keys and not ctx.get("api_keys"):
+            if not ctx.get("api_keys"):
+                # Same dict the API keys window edits, so new keys apply
                 ctx["api_keys"] = self.preloaded_keys
             agent = Agent(boot_context=ctx)
             agent._policy._confirm_fn = self._gui_confirm   # GUI, not stdin
@@ -200,9 +211,8 @@ class ChatBackend:
 
             # In local mode the loaded GGUF is used; provider/model steer
             # only API routing.
-            route = {}
-            if agent._mode in ("api", "hybrid") and provider_key != "local":
-                route = {"provider": provider_key, "model": model}
+            route = {"provider": "local"} if provider_key == "local" \
+                else {"provider": provider_key, "model": model}
 
             t0 = time.time()
             produced = False
@@ -364,30 +374,29 @@ class CarryAIApp:
 
         # Provider
         self._lbl(sb, "Provider")
-        prov_names = [p["name"] for p in PROVIDERS]
-        self._provider_var = tk.StringVar(value=prov_names[0])
+        self._menu_provs = menu_providers()
+        self._provider_var = tk.StringVar(value=self._menu_provs[0]["name"])
         if CTK:
             self._prov_menu = ctk.CTkOptionMenu(sb, variable=self._provider_var,
-                values=prov_names, command=self._on_provider_change, width=190)
+                values=[ADD_KEY_ITEM], command=self._on_provider_change, width=190)
         else:
-            self._prov_menu = tk.OptionMenu(sb, self._provider_var, *prov_names,
-                command=self._on_provider_change)
+            self._prov_menu = tk.OptionMenu(sb, self._provider_var, ADD_KEY_ITEM)
             self._prov_menu.config(bg=self.C["bg3"], fg=self.C["fg"],
                                     highlightthickness=0, font=(FONT_FAMILY, 11))
         self._prov_menu.pack(padx=14, pady=(0, 8), fill="x")
 
         # Model
         self._lbl(sb, "Model")
-        first_models = PROVIDERS[0]["models"]
-        self._model_var = tk.StringVar(value=first_models[0])
+        self._model_var = tk.StringVar(value="")
         if CTK:
             self._model_menu = ctk.CTkOptionMenu(sb, variable=self._model_var,
-                values=first_models, width=190)
+                values=[""], width=190)
         else:
-            self._model_menu = tk.OptionMenu(sb, self._model_var, *first_models)
+            self._model_menu = tk.OptionMenu(sb, self._model_var, "")
             self._model_menu.config(bg=self.C["bg3"], fg=self.C["fg"],
                                      highlightthickness=0, font=(FONT_FAMILY, 11))
         self._model_menu.pack(padx=14, pady=(0, 8), fill="x")
+        self._refresh_provider_menu()
 
         self._sep(sb)
 
@@ -422,6 +431,7 @@ class CarryAIApp:
         bf.pack(side="bottom", fill="x", padx=10, pady=10)
         btns = [
             ("Models", self._open_model_manager, self.C["accent2"]),
+            ("API Keys", self._open_api_keys, self.C["accent2"]),
             ("Export Chat", self._export_chat, self.C["border"]),
             ("Web UI", self._open_web_ui, self.C["border"]),
         ]
@@ -596,7 +606,7 @@ class CarryAIApp:
         self._input_text.configure(height=2)
         self._on_focus_in()
 
-        prov = next((p for p in PROVIDERS if p["name"] == self._provider_var.get()), PROVIDERS[0])
+        prov = self._current_provider()
         model = self._model_var.get()
 
         # Prior turns (before this new user message) — replayed into the
@@ -933,17 +943,53 @@ class CarryAIApp:
     def _sep(self, parent):
         tk.Frame(parent, height=1, bg=self.C["border"]).pack(fill="x", padx=10, pady=8)
 
-    def _on_provider_change(self, _=None):
-        prov = next((p for p in PROVIDERS if p["name"] == self._provider_var.get()), PROVIDERS[0])
-        models = prov["models"]
-        self._model_var.set(models[0])
+    def _current_provider(self) -> dict:
+        name = self._provider_var.get()
+        return next((p for p in self._menu_provs if p["name"] == name), self._menu_provs[0])
+
+    def _set_menu(self, widget, var, values, on_pick=None):
+        """Replace an option menu's items (CTk or plain tk)."""
         if CTK:
-            self._model_menu.configure(values=models)
-        else:
-            menu = self._model_menu["menu"]
-            menu.delete(0, "end")
-            for m in models:
-                menu.add_command(label=m, command=lambda v=m: self._model_var.set(v))
+            widget.configure(values=values)
+            return
+        menu = widget["menu"]
+        menu.delete(0, "end")
+        for v in values:
+            menu.add_command(label=v, command=lambda v=v: (var.set(v), on_pick and on_pick(v)))
+
+    def _refresh_provider_menu(self):
+        """Rebuild the provider list (after keys were added or removed)."""
+        self._menu_provs = menu_providers()
+        names = [p["name"] for p in self._menu_provs]
+        self._set_menu(self._prov_menu, self._provider_var, names + [ADD_KEY_ITEM],
+                       self._on_provider_change)
+        if self._provider_var.get() not in names:
+            self._provider_var.set(names[0])
+        self._on_provider_change()
+
+    def _on_provider_change(self, _=None):
+        if self._provider_var.get() == ADD_KEY_ITEM:
+            self._provider_var.set(self._menu_provs[0]["name"])
+            self._open_api_keys()
+        models = self._current_provider()["models"]
+        if self._model_var.get() not in models:
+            self._model_var.set(models[0])
+        self._set_menu(self._model_menu, self._model_var, models)
+
+    def _open_api_keys(self):
+        ApiKeysDialog(self)
+
+    def on_keys_changed(self, added: list[str] | None = None):
+        """Keys were added/removed in the API keys window."""
+        agent = self.backend._agent
+        if agent is not None:
+            agent.set_api_keys(ChatBackend.preloaded_keys)
+        self._refresh_provider_menu()
+        # Switch to a provider the user just added a key for
+        new = [p["name"] for p in self._menu_provs if p["key"] in (added or [])]
+        if new:
+            self._provider_var.set(new[0])
+            self._on_provider_change()
 
     def _update_status(self, text: str, online: bool = True):
         color = self.C["accent"] if online else self.C["error"]
@@ -1044,12 +1090,19 @@ class ModelManagerWindow:
         # Active tab
         self._active_tab = tk.StringVar(value="my")
 
-        # Available RAM for display
+        # Free RAM + dedicated VRAM, for the fit labels and download warning
         try:
             import psutil
             self._ram_gb = psutil.virtual_memory().available / (1024 ** 3)
         except ImportError:
             self._ram_gb = 0.0
+        self._vram_gb, self._gpu_name = 0.0, ""
+        try:
+            from integrations.llmfit_advisor import detect_hardware
+            hw = detect_hardware()
+            self._vram_gb, self._gpu_name = hw.vram_gb, hw.gpu_name
+        except Exception as e:
+            log.debug("GPU detection unavailable: %s", e)
 
         self._win = tk.Toplevel(parent)
         self._win.title("carry-ai — Model Manager")
@@ -1073,7 +1126,9 @@ class ModelManagerWindow:
         tk.Label(hdr, text="Model Manager", font=(FONT_FAMILY, 15, "bold"),
                  fg=self.C["fg"], bg=self.C["bg2"]).pack(side="left", padx=16)
         if self._ram_gb > 0:
-            tk.Label(hdr, text=f"RAM: {self._ram_gb:.1f} GB free",
+            gpu = (f"  |  GPU: {self._gpu_name} {self._vram_gb:.0f} GB"
+                   if self._vram_gb else "  |  no dedicated GPU")
+            tk.Label(hdr, text=f"RAM: {self._ram_gb:.1f} GB free{gpu}",
                      font=(FONT_FAMILY, 10), fg=self.C["fg2"],
                      bg=self.C["bg2"]).pack(side="right", padx=16)
 
@@ -1088,10 +1143,14 @@ class ModelManagerWindow:
                                      insertbackground=self.C["fg"],
                                      font=(FONT_FAMILY, 10), relief="flat")
         self._token_entry.pack(side="left", padx=4, pady=6)
-        self._token_entry.insert(0, os.environ.get("HF_TOKEN", ""))
-        tk.Label(tf, text="huggingface.co/settings/tokens",
-                 font=(FONT_FAMILY, 9), fg=self.C["fg3"],
-                 bg=self.C["bg3"]).pack(side="left", padx=8)
+        self._token_entry.insert(0, ChatBackend.key_for("huggingface")
+                                 or os.environ.get("HF_TOKEN", ""))
+        tk.Button(tf, text="Sign in with Hugging Face", command=self._sign_in_hf,
+                  bg=self.C["accent2"], fg="#111", font=(FONT_FAMILY, 9, "bold"),
+                  relief="flat", cursor="hand2").pack(side="left", padx=8, pady=4)
+        self._hf_status = tk.Label(tf, text="", font=(FONT_FAMILY, 9),
+                                   fg=self.C["fg3"], bg=self.C["bg3"])
+        self._hf_status.pack(side="left", padx=4)
 
         # ── Tab bar ─────────────────────────────────────────────────────────
         tab_bar = tk.Frame(self._win, bg=self.C["bg3"], height=36)
@@ -1325,9 +1384,7 @@ class ModelManagerWindow:
             if m["quant"]:
                 meta_parts.append(m["quant"])
             if self._ram_gb > 0:
-                needed = m["size_gb"] + 1.5
-                fits = "fits" if self._ram_gb >= needed else "needs more RAM"
-                meta_parts.append(f"{fits} ({needed:.0f} GB needed)")
+                meta_parts.append(self._fit(m["size_gb"]).label())
             if m["verified_ok"] is True:
                 meta_parts.append("verified ✓")
             elif m["verified_ok"] is False:
@@ -1503,10 +1560,7 @@ class ModelManagerWindow:
                 fname = f.filename if hasattr(f, "filename") else f.get("filename", "")
                 size_gb = (f.size_bytes if hasattr(f, "size_bytes") else f.get("size_bytes", 0)) / (1024**3)
                 quant = f.quant if hasattr(f, "quant") else f.get("quant", "")
-                needed = size_gb + 1.5
-                ram_hint = ""
-                if self._ram_gb > 0:
-                    ram_hint = f" ✓" if self._ram_gb >= needed else f" (need {needed:.0f}GB)"
+                ram_hint = f"  {self._fit(size_gb).label()}" if self._ram_gb > 0 else ""
                 status = " [downloaded]" if fname in existing else ""
                 label = f"[{quant or '?':>8}]  {size_gb:.1f} GB{ram_hint}  {fname}{status}"
                 self._quant_lb.insert("end", label)
@@ -1526,11 +1580,67 @@ class ModelManagerWindow:
             self._dl_info_lbl.config(text=f"{fname}  ({size_gb:.2f} GB)")
             self._dl_btn.config(state="normal")
 
+    # ── Hugging Face sign-in ──────────────────────────────────────────────
+
+    def _sign_in_hf(self, on_done=None):
+        """Device-code sign-in: the user approves on their phone, no browser
+        is opened on this PC."""
+        from models.hf_auth import configured_client_id
+        client_id = configured_client_id()
+        if not client_id:
+            from tkinter import messagebox
+            messagebox.showinfo(
+                "Set up Hugging Face sign-in",
+                "Sign-in needs a carry-ai app registered on Hugging Face (once):\n\n"
+                "1. huggingface.co/settings/applications/new\n"
+                "2. Public app (no secret), scope: gated-repos\n"
+                "3. Put its Client ID in config/settings.json:\n"
+                '   {"huggingface": {"oauth_client_id": "..."}}\n\n'
+                "Until then you can paste an access token in the field.",
+                parent=self._win)
+            return
+        HfSignInDialog(self, client_id, on_done=on_done)
+
+    def _on_hf_signed_in(self, token: str, username: str):
+        """Token arrives from the sign-in dialog (on the Tk thread)."""
+        self._token_entry.delete(0, "end")
+        self._token_entry.insert(0, token)
+        ChatBackend.preloaded_keys["huggingface"] = {"api_key": token}  # RAM only
+        self._hf_status.config(text=f"Signed in as {username}" if username else "Signed in")
+        from tkinter import messagebox
+        if messagebox.askyesno(
+                "Remember sign-in?",
+                "Save this Hugging Face token in the encrypted keystore on the "
+                "USB, so you don't need to sign in next time?\n\n"
+                "(It never touches this PC's disk either way.)", parent=self._win):
+            self._save_hf_token(token)
+
+    def _save_hf_token(self, token: str):
+        save_keys_encrypted(self._win, {"huggingface": token})
+
+    def _fit(self, size_gb: float):
+        """Fit estimate against this PC's free RAM + dedicated VRAM."""
+        from models.fit import estimate_fit
+        return estimate_fit(size_gb, self._ram_gb, self._vram_gb)
+
     def _start_download_selected(self):
         if not self._selected_file or not self._selected_repo:
             return
         f = self._selected_file
         fname = f.filename if hasattr(f, "filename") else f.get("filename", "")
+        size_gb = (f.size_bytes if hasattr(f, "size_bytes") else f.get("size_bytes", 0)) / (1024**3)
+        if self._ram_gb > 0 and size_gb > 0:
+            fit = self._fit(size_gb)
+            if not fit.ok:
+                from tkinter import messagebox
+                if not messagebox.askyesno(
+                        "Model too big for this PC",
+                        f"{fname} needs about {fit.needed_gb:.0f} GB at run time, but "
+                        f"this PC has about {fit.budget_gb:.0f} GB free (RAM"
+                        f"{' + GPU' if self._vram_gb else ''}).\n\n"
+                        "It may fail to load or be very slow. Download anyway?",
+                        icon="warning", parent=self._win):
+                    return
         gated = False  # unknown from search; rely on 401 handling
         model = {
             "name": fname,
@@ -1572,6 +1682,20 @@ class ModelManagerWindow:
         dest = self._models_dir / filename
         url = f"https://huggingface.co/{model['hf_repo']}/resolve/main/{filename}"
         display_name = model.get("name", filename)
+
+        # Gated repo? Find out before downloading, so the user gets the
+        # sign-in / accept-licence dialog instead of a bare 401.
+        try:
+            from models.hf_auth import check_access, gating_mode
+            access = check_access(model["hf_repo"], filename, hf_token or None)
+            if access in ("auth_required", "no_access"):
+                self._dl_result = ("gated", {
+                    "model": model, "access": access,
+                    "mode": gating_mode(model["hf_repo"], hf_token or None),
+                })
+                return
+        except Exception as e:
+            log.debug("Access pre-check skipped: %s", e)
 
         def _attempt(retry: bool = False) -> bool:
             try:
@@ -1633,10 +1757,9 @@ class ModelManagerWindow:
                     dest.unlink(missing_ok=True)
                 if e.code == 401:
                     self._dl_result = ("error",
-                        f"401 Unauthorized — HF token required for '{display_name}'.\n"
-                        f"  1. huggingface.co/settings/tokens → create a token\n"
-                        f"  2. Accept license: huggingface.co/{model.get('hf_repo','')}\n"
-                        f"  3. Paste your token in the HF Token field above")
+                        f"401 Unauthorized — '{display_name}' needs Hugging Face access.\n"
+                        f"  Use 'Sign in with Hugging Face' above, then accept the\n"
+                        f"  licence at huggingface.co/{model.get('hf_repo','')} (phone is fine)")
                     return True
                 elif e.code in (500, 502, 503, 504) and not retry:
                     self._dl_status = f"Server error {e.code}, retrying in 5 s…"
@@ -1658,6 +1781,10 @@ class ModelManagerWindow:
         if self._dl_result:
             status, msg = self._dl_result
             self._dl_result = None
+            if status == "gated":
+                self._progress_lbl.config(text="This model is gated — see the dialog.")
+                GatedModelDialog(self, **msg)
+                return
             self._progress_bar_var.set(100 if status == "ok" else 0)
             # Show only first line to fit label
             self._progress_lbl.config(text=msg.splitlines()[0])
@@ -1670,6 +1797,451 @@ class ModelManagerWindow:
         if self._dl_status:
             self._progress_lbl.config(text=self._dl_status)
         self._win.after(100, self._poll_download)
+
+
+# ---------------------------------------------------------------------------
+# Hugging Face sign-in / gated-model dialogs (no browser on this PC)
+# ---------------------------------------------------------------------------
+try:
+    import qrcode as _qrcode          # optional, pure Python
+except ImportError:
+    _qrcode = None
+
+
+def save_keys_encrypted(parent, changes: dict) -> bool:
+    """Write API keys to the encrypted keystore on the USB (providers.enc).
+
+    *changes* maps provider -> key; an empty/None key removes that provider.
+    Asks for the passphrase (or a new one if no keystore exists yet).
+    Returns True if saved.
+    """
+    from tkinter import messagebox, simpledialog
+    from crypto.keystore import KeyStore
+    enc = PROJECT_ROOT / "config" / "providers.enc"
+    try:
+        text = enc.read_text(encoding="utf-8").strip() if enc.is_file() else ""
+    except OSError:
+        text = ""
+    existing = bool(text) and not text.startswith("#")
+    prompt = ("Keystore passphrase:" if existing
+              else "Choose a passphrase for the new keystore:")
+    pw = simpledialog.askstring("Encrypted keystore", prompt, show="*", parent=parent)
+    if not pw:
+        return False
+    if not existing:
+        again = simpledialog.askstring("Encrypted keystore", "Repeat the passphrase:",
+                                       show="*", parent=parent)
+        if again != pw:
+            messagebox.showerror("Keystore", "Passphrases didn't match.", parent=parent)
+            return False
+    ks = KeyStore(enc_path=str(enc))
+    try:
+        if not existing or not ks.unlock(pw):
+            ks.init_new(pw)
+        for provider, key in changes.items():
+            if key:
+                ks.add(provider, "api_key", key, save=False)
+            else:
+                ks.remove(provider, save=False)
+        ks.save()
+        messagebox.showinfo("Keystore", "Saved (encrypted, on the USB).", parent=parent)
+        return True
+    except ValueError:
+        messagebox.showerror("Keystore", "Wrong passphrase — not saved.", parent=parent)
+    except Exception as e:
+        messagebox.showerror("Keystore", f"Could not save: {e}", parent=parent)
+    finally:
+        ks.lock()
+    return False
+
+
+def qr_canvas(parent, text: str, px: int = 200):
+    """A Tk canvas showing *text* as a QR code, or None without `qrcode`.
+
+    Drawn as rectangles on a white canvas, so no Pillow is needed and it
+    scans fine on the dark theme.
+    """
+    if _qrcode is None:
+        return None
+    qr = _qrcode.QRCode(border=2, error_correction=_qrcode.constants.ERROR_CORRECT_M)
+    qr.add_data(text)
+    qr.make(fit=True)
+    matrix = qr.get_matrix()
+    n = len(matrix)
+    cell = max(2, px // n)
+    c = tk.Canvas(parent, width=n * cell, height=n * cell, bg="white",
+                  highlightthickness=0)
+    for y, row in enumerate(matrix):
+        for x, on in enumerate(row):
+            if on:
+                c.create_rectangle(x * cell, y * cell, (x + 1) * cell, (y + 1) * cell,
+                                   fill="black", outline="")
+    return c
+
+
+class ApiKeysDialog:
+    """Settings → API keys: one row per cloud provider in providers/catalog.py.
+
+    Free-to-start providers are listed first. "Get key" shows the provider's
+    key page as a QR code (for the user's phone) or opens it in a throwaway
+    private window — never the host's own browser. "Test" checks the key
+    with a cheap authenticated call. Keys live in RAM for the session and
+    are optionally saved, encrypted, to providers.enc on the USB.
+    """
+
+    def __init__(self, app):
+        from providers.catalog import free_providers, paid_providers
+        self._app = app
+        C = self.C = app.C
+        self._entries: dict[str, tk.Entry] = {}
+        self._status: dict[str, tk.Label] = {}
+        self._results: queue.Queue = queue.Queue()
+
+        self._win = tk.Toplevel(app._root)
+        self._win.title("API keys")
+        self._win.configure(bg=C["bg"])
+        self._win.geometry("760x640")
+        self._win.transient(app._root)
+
+        tk.Label(self._win, text="Cloud API keys", font=(FONT_FAMILY, 15, "bold"),
+                 fg=C["fg"], bg=C["bg"]).pack(padx=20, pady=(16, 2), anchor="w")
+        tk.Label(self._win, text="Optional — add any you have. Keys stay in memory for this "
+                                 "session unless you save them (encrypted, on the USB).",
+                 font=(FONT_FAMILY, 10), fg=C["fg2"], bg=C["bg"],
+                 wraplength=700, justify="left").pack(padx=20, anchor="w")
+
+        # Scrollable body
+        outer = tk.Frame(self._win, bg=C["bg"])
+        outer.pack(fill="both", expand=True, padx=12, pady=8)
+        canvas = tk.Canvas(outer, bg=C["bg"], highlightthickness=0)
+        sb = tk.Scrollbar(outer, orient="vertical", command=canvas.yview)
+        body = tk.Frame(canvas, bg=C["bg"])
+        body.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas.create_window((0, 0), window=body, anchor="nw")
+        canvas.configure(yscrollcommand=sb.set)
+        canvas.pack(side="left", fill="both", expand=True)
+        sb.pack(side="right", fill="y")
+        # Bound on the dialog (every child has it in its bindtags), not
+        # bind_all, so nothing is left behind once the dialog closes.
+        self._win.bind("<MouseWheel>",
+                       lambda e: canvas.yview_scroll(-1 if e.delta > 0 else 1, "units"))
+        self._win.bind("<Button-4>", lambda e: canvas.yview_scroll(-1, "units"))
+        self._win.bind("<Button-5>", lambda e: canvas.yview_scroll(1, "units"))
+
+        self._section(body, "Free to start",
+                      "No credit card needed — good for trying carry-ai out. Free tiers are "
+                      "rate-limited and may log prompts; don't send anything private.")
+        for p in free_providers():
+            self._row(body, p)
+        self._section(body, "Paid (pay as you go)", "Best quality; billed per token.")
+        for p in paid_providers():
+            self._row(body, p)
+
+        bar = tk.Frame(self._win, bg=C["bg2"])
+        bar.pack(fill="x", side="bottom")
+        for text, cmd, color in (("Close", self._win.destroy, C["bg3"]),
+                                 ("Save & remember", lambda: self._save(remember=True), C["accent2"]),
+                                 ("Use this session", lambda: self._save(remember=False), C["accent"])):
+            tk.Button(bar, text=text, command=cmd, bg=color,
+                      fg=C["fg"] if color == C["bg3"] else "#111",
+                      font=(FONT_FAMILY, 10, "bold"), relief="flat", cursor="hand2",
+                      padx=12, pady=4).pack(side="right", padx=6, pady=8)
+        self._poll()
+
+    # -- layout --------------------------------------------------------
+
+    def _section(self, parent, title: str, note: str):
+        C = self.C
+        tk.Label(parent, text=title, font=(FONT_FAMILY, 12, "bold"),
+                 fg=C["accent"], bg=C["bg"]).pack(padx=8, pady=(12, 0), anchor="w")
+        tk.Label(parent, text=note, font=(FONT_FAMILY, 9), fg=C["fg3"], bg=C["bg"],
+                 wraplength=690, justify="left").pack(padx=8, pady=(0, 4), anchor="w")
+
+    def _row(self, parent, p):
+        C = self.C
+        row = tk.Frame(parent, bg=C["bg2"])
+        row.pack(fill="x", padx=6, pady=3)
+        top = tk.Frame(row, bg=C["bg2"])
+        top.pack(fill="x", padx=10, pady=(6, 0))
+        tk.Label(top, text=p.label, font=(FONT_FAMILY, 11, "bold"),
+                 fg=C["fg"], bg=C["bg2"]).pack(side="left")
+        tk.Label(top, text="  " + p.blurb, font=(FONT_FAMILY, 9),
+                 fg=C["fg2"], bg=C["bg2"]).pack(side="left")
+        if p.free_note:
+            tk.Label(row, text=p.free_note, font=(FONT_FAMILY, 9), fg=C["fg3"],
+                     bg=C["bg2"], wraplength=680, justify="left").pack(padx=10, anchor="w")
+
+        line = tk.Frame(row, bg=C["bg2"])
+        line.pack(fill="x", padx=10, pady=(4, 8))
+        entry = tk.Entry(line, show="•", width=44, bg=C["input_bg"], fg=C["fg"],
+                         insertbackground=C["fg"], font=(MONO_FAMILY, 10), relief="flat")
+        from providers.catalog import detected_key
+        current = ChatBackend.key_for(p.key)
+        detected = "" if current else detected_key(p.key)
+        entry.insert(0, current or detected)
+        entry.pack(side="left", ipady=3)
+        self._entries[p.key] = entry
+        for text, cmd in (("Get key", lambda p=p: KeyLinkDialog(self._win, self.C, p)),
+                          ("Test", lambda p=p: self._test(p))):
+            tk.Button(line, text=text, command=cmd, bg=C["bg3"], fg=C["fg"],
+                      font=(FONT_FAMILY, 9), relief="flat", cursor="hand2",
+                      padx=8).pack(side="left", padx=(6, 0))
+        status = tk.Label(line, text="(detected)" if detected else "✓ set" if current else "",
+                          font=(FONT_FAMILY, 9),
+                          fg=C["accent"], bg=C["bg2"])
+        status.pack(side="left", padx=8)
+        self._status[p.key] = status
+
+    # -- actions -------------------------------------------------------
+
+    def _test(self, p):
+        key = self._entries[p.key].get().strip()
+        if not key:
+            self._status[p.key].config(text="enter a key first", fg=self.C["fg3"])
+            return
+        self._status[p.key].config(text="testing…", fg=self.C["fg3"])
+
+        def work():
+            from providers.catalog import validate_key
+            self._results.put((p.key, validate_key(p.key, key)))
+        threading.Thread(target=work, daemon=True).start()
+
+    def _poll(self):
+        try:
+            while True:
+                name, (state, msg) = self._results.get_nowait()
+                color = {"ok": self.C["accent"], "invalid": self.C["error"]}.get(state, self.C["fg2"])
+                self._status[name].config(text=msg, fg=color)
+        except queue.Empty:
+            pass
+        if self._win.winfo_exists():
+            self._win.after(200, self._poll)
+
+    def _save(self, remember: bool):
+        from providers.catalog import normalize_key
+        keys = ChatBackend.preloaded_keys      # same dict the launcher wipes on exit
+        changes = {}
+        for name, entry in self._entries.items():
+            new = normalize_key(entry.get())
+            if new == ChatBackend.key_for(name):
+                continue
+            changes[name] = new
+            if new:
+                entry_dict = keys.get(name) if isinstance(keys.get(name), dict) else {}
+                keys[name] = {**entry_dict, "api_key": new}
+            else:
+                keys.pop(name, None)
+        if remember and changes:
+            if not save_keys_encrypted(self._win, changes):
+                return
+        self._app.on_keys_changed(added=[n for n, k in changes.items() if k])
+        self._win.destroy()
+
+
+class KeyLinkDialog:
+    """Where to get a key: QR for the phone, copy link, or a private window."""
+
+    def __init__(self, parent, C, p):
+        self._url = p.key_url
+        win = self._win = tk.Toplevel(parent)
+        win.title(f"{p.label} API key")
+        win.configure(bg=C["bg"])
+        win.transient(parent)
+        tk.Label(win, text=f"Get your {p.label} API key", font=(FONT_FAMILY, 13, "bold"),
+                 fg=C["fg"], bg=C["bg"]).pack(padx=24, pady=(16, 4))
+        tk.Label(win, text="Scan with your phone, sign in, create a key, then type or paste "
+                           "it here.", font=(FONT_FAMILY, 10), fg=C["fg2"], bg=C["bg"],
+                 wraplength=360).pack(padx=24)
+        qr = qr_canvas(win, self._url, px=180)
+        if qr is not None:
+            qr.pack(pady=10)
+        tk.Label(win, text=self._url, font=(MONO_FAMILY, 10), fg=C["accent"],
+                 bg=C["bg"]).pack(padx=24, pady=(4, 8))
+        bar = tk.Frame(win, bg=C["bg"])
+        bar.pack(pady=(0, 16))
+        for text, cmd in (("Copy link", self._copy),
+                          ("Open in private window", self._open),
+                          ("Close", win.destroy)):
+            tk.Button(bar, text=text, command=cmd, bg=C["bg3"], fg=C["fg"],
+                      font=(FONT_FAMILY, 9), relief="flat", padx=8).pack(side="left", padx=4)
+
+    def _copy(self):
+        # The clipboard is wiped on eject (cleanup step 3).
+        self._win.clipboard_clear()
+        self._win.clipboard_append(self._url)
+
+    def _open(self):
+        from ui.browser import open_private
+        session_dir = (os.environ.get("CARRY_AI_SESSION_DIR")
+                       or os.path.join(tempfile.gettempdir(), "ai_session"))
+        open_private(self._url, session_dir)
+
+
+class HfSignInDialog:
+    """Shows a device code + QR; polls Hugging Face until the user approves
+    on their phone, then hands the token to the Model Manager."""
+
+    def __init__(self, manager, client_id: str, on_done=None):
+        self._mgr = manager
+        self._client_id = client_id
+        self._on_done = on_done
+        self._cancel = threading.Event()
+        self._result = None             # ("code", DeviceCode) | ("token", ...) | ("error", msg)
+        C = manager.C
+
+        self._win = tk.Toplevel(manager._win)
+        self._win.title("Sign in with Hugging Face")
+        self._win.configure(bg=C["bg"])
+        self._win.transient(manager._win)
+        self._win.protocol("WM_DELETE_WINDOW", self._close)
+
+        tk.Label(self._win, text="Sign in with Hugging Face", font=(FONT_FAMILY, 14, "bold"),
+                 fg=C["fg"], bg=C["bg"]).pack(padx=24, pady=(18, 4))
+        tk.Label(self._win, text="On your phone (or any device), open the link and enter the code.\n"
+                                 "Nothing is opened on this PC.",
+                 font=(FONT_FAMILY, 10), fg=C["fg2"], bg=C["bg"], justify="center").pack(padx=24)
+        self._qr_holder = tk.Frame(self._win, bg=C["bg"])
+        self._qr_holder.pack(pady=10)
+        self._code_lbl = tk.Label(self._win, text="…", font=(MONO_FAMILY, 26, "bold"),
+                                  fg=C["accent"], bg=C["bg"])
+        self._code_lbl.pack()
+        self._link_lbl = tk.Label(self._win, text="", font=(MONO_FAMILY, 10),
+                                  fg=C["fg2"], bg=C["bg"])
+        self._link_lbl.pack(pady=(2, 8))
+        self._status = tk.Label(self._win, text="Requesting a code…", font=(FONT_FAMILY, 10),
+                                fg=C["fg3"], bg=C["bg"])
+        self._status.pack(pady=(0, 8))
+        tk.Button(self._win, text="Cancel", command=self._close, relief="flat",
+                  bg=C["bg3"], fg=C["fg"]).pack(pady=(0, 16))
+
+        threading.Thread(target=self._worker, daemon=True).start()
+        self._poll()
+
+    def _worker(self):
+        from models.hf_auth import HfAuthError, poll_for_token, start_device_flow, whoami
+        try:
+            code = start_device_flow(self._client_id)
+            self._result = ("code", code)
+            token = poll_for_token(self._client_id, code, cancel=self._cancel)
+            self._result = ("token", (token.access_token, whoami(token.access_token)))
+        except HfAuthError as e:
+            self._result = ("error", str(e))
+        except Exception as e:
+            self._result = ("error", f"Sign-in failed: {e}")
+
+    def _poll(self):
+        if not self._win.winfo_exists():
+            return
+        result, self._result = self._result, None
+        if result:
+            kind, data = result
+            if kind == "code":
+                self._code_lbl.config(text=data.user_code)
+                self._link_lbl.config(text=data.verification_uri)
+                qr = qr_canvas(self._qr_holder, data.link)
+                if qr is not None:
+                    qr.pack()
+                self._status.config(text="Waiting for you to approve on Hugging Face…")
+            elif kind == "token":
+                token, user = data
+                self._win.destroy()
+                self._mgr._on_hf_signed_in(token, user)
+                if self._on_done:
+                    self._on_done(token)
+                return
+            elif kind == "error":
+                self._status.config(text=data, fg="#e5534b")
+                return
+        self._win.after(250, self._poll)
+
+    def _close(self):
+        self._cancel.set()
+        self._win.destroy()
+
+
+class GatedModelDialog:
+    """Explains a gated model and gets the user through it without a
+    browser on this PC: sign in (device code) and/or accept the licence on
+    the model page via a QR code, then re-check and resume the download."""
+
+    def __init__(self, manager, model: dict, access: str, mode: str = ""):
+        from models.hf_auth import repo_page_url
+        self._mgr = manager
+        self._model = model
+        C = manager.C
+        repo = model["hf_repo"]
+        page = repo_page_url(repo)
+
+        self._win = tk.Toplevel(manager._win)
+        self._win.title("Gated model")
+        self._win.configure(bg=C["bg"])
+        self._win.transient(manager._win)
+
+        tk.Label(self._win, text=f"{repo} is gated", font=(FONT_FAMILY, 13, "bold"),
+                 fg=C["fg"], bg=C["bg"]).pack(padx=24, pady=(18, 6))
+        if access == "auth_required":
+            text = ("Its authors ask you to accept their licence first, which needs "
+                    "a Hugging Face account.\n\n1. Sign in (on your phone).\n"
+                    "2. Accept the licence on the model page (scan the code).\n"
+                    "3. Press Check again.")
+        else:
+            approval = ("Approval is automatic — access is instant after you agree."
+                        if mode == "auto" else
+                        "The authors approve requests by hand — this can take hours or days."
+                        if mode == "manual" else "")
+            text = ("Your account doesn't have access yet. Scan the code to open the "
+                    "model page on your phone and tap Agree.\n" + approval +
+                    "\n\nHugging Face only accepts licences on its website, so this step "
+                    "can't happen inside carry-ai.")
+        tk.Label(self._win, text=text, font=(FONT_FAMILY, 10), fg=C["fg2"], bg=C["bg"],
+                 justify="left", wraplength=420).pack(padx=24)
+
+        qr = qr_canvas(self._win, page)
+        if qr is not None:
+            qr.pack(pady=10)
+        tk.Label(self._win, text=page, font=(MONO_FAMILY, 10), fg=C["fg2"],
+                 bg=C["bg"]).pack(pady=(0, 6))
+        self._status = tk.Label(self._win, text="", font=(FONT_FAMILY, 10),
+                                fg=C["fg3"], bg=C["bg"])
+        self._status.pack()
+
+        row = tk.Frame(self._win, bg=C["bg"])
+        row.pack(pady=(8, 16))
+        if access == "auth_required":
+            tk.Button(row, text="Sign in", relief="flat", bg=C["accent2"], fg="#111",
+                      command=lambda: manager._sign_in_hf(on_done=lambda _t: self._recheck())
+                      ).pack(side="left", padx=4)
+        tk.Button(row, text="Check again", relief="flat", bg=C["accent"], fg="#111",
+                  command=self._recheck).pack(side="left", padx=4)
+        tk.Button(row, text="Close", relief="flat", bg=C["bg3"], fg=C["fg"],
+                  command=self._win.destroy).pack(side="left", padx=4)
+
+    def _recheck(self):
+        if not self._win.winfo_exists():
+            return
+        token = self._mgr._token_entry.get().strip() or None
+        self._status.config(text="Checking…")
+        box = {}
+
+        def _worker():
+            from models.hf_auth import check_access
+            box["access"] = check_access(self._model["hf_repo"], self._model["hf_file"], token)
+        threading.Thread(target=_worker, daemon=True).start()
+
+        def _wait():
+            if "access" not in box:
+                self._win.after(200, _wait)
+                return
+            if box["access"] == "ok":
+                self._win.destroy()
+                self._mgr._start_download(self._model)
+            elif box["access"] == "auth_required":
+                self._status.config(text="Not signed in yet.")
+            elif box["access"] == "no_access":
+                self._status.config(text="No access yet — accept the licence, or wait for approval.")
+            else:
+                self._status.config(text="Couldn't reach Hugging Face — try again.")
+        _wait()
 
 
 # ---------------------------------------------------------------------------

@@ -149,13 +149,6 @@ OPTIONAL_PACKAGES: list[tuple[str, str]] = [
     ("elevenlabs", "elevenlabs"),
 ]
 
-PROVIDER_DESCRIPTIONS: dict[str, str] = {
-    "anthropic": "Anthropic Claude (Opus 5, Sonnet 5, Haiku 4.5, …)",
-    "openai": "OpenAI GPT-6 (luna / sol / astra)",
-    "groq": "Groq — ultra-fast open-model inference (GPT-OSS, Qwen)",
-    "openrouter": "OpenRouter — unified gateway to 100+ models",
-    "google": "Google Gemini via OAuth / API key",
-}
 
 # ---------------------------------------------------------------------------
 # ASCII banner (Carry AI figlet — matches launcher.py)
@@ -462,59 +455,96 @@ def select_mode(ram_gb: float, has_models: bool, has_keys: bool) -> str:
 
 def setup_api_keys() -> dict[str, str]:
     """
-    Interactive wizard to collect API keys for supported cloud providers.
+    Interactive wizard to collect API keys for cloud providers.
 
-    Keys are stored only in memory during this session unless the user
-    chooses to encrypt and persist them via the keystore CLI.
+    Providers come from providers/catalog.py: free-to-start ones (no credit
+    card) first, then paid. Keys are kept in memory unless the user chooses
+    to encrypt them into config/providers.enc. The desktop app's
+    "API Keys" window does the same later.
 
     Returns a dict mapping provider_name → api_key for entered keys.
     """
+    from providers.catalog import detected_key, free_providers, normalize_key, paid_providers
+
     _print(
-        "Enter API keys for the providers you want to use.\n"
-        "Press [bold]Enter[/bold] to skip any provider.\n"
-        "Key input is hidden while you type.\n"
+        "Cloud models are optional — carry-ai also runs local models offline.\n"
+        "Press [bold]Enter[/bold] to skip any provider. Key input is hidden.\n"
     )
 
     keys: dict[str, str] = {}
+    sections = (("Free to start (no credit card)", free_providers()),
+                ("Paid (pay as you go)", paid_providers()))
+    for title, providers in sections:
+        _rule(title)
+        for p in providers:
+            _print(f"[cyan]{p.label}[/cyan] — {p.blurb}")
+            if p.free_note:
+                _print(f"  [dim]{p.free_note}[/dim]")
+            _print(f"  Get a key: {p.key_url}")
+            found = detected_key(p.key)
+            try:
+                if found and _prompt(f"  Use {p.env_var} from the environment "
+                                     f"({found[:4]}…{found[-4:]})? [Y/n]: ").strip().lower() \
+                        not in ("n", "no"):
+                    key = found
+                else:
+                    key = normalize_key(getpass.getpass(f"  {p.label} API key (blank to skip): "))
+            except (KeyboardInterrupt, EOFError):
+                _print()
+                sys.exit(0)
 
-    for provider, description in PROVIDER_DESCRIPTIONS.items():
-        _print(f"[cyan]{provider}[/cyan] — {description}")
-        try:
-            key = getpass.getpass(f"  {provider} API key (blank to skip): ").strip()
-        except (KeyboardInterrupt, EOFError):
+            if key:
+                keys[p.key] = key
+                _print(f"  [green]Key stored for {p.label}.[/green]")
+            else:
+                _print(f"  [dim]Skipped {p.label}.[/dim]")
             _print()
-            sys.exit(0)
-
-        if key:
-            keys[provider] = key
-            _print(f"  [green]Key stored for {provider}.[/green]")
-        else:
-            _print(f"  [dim]Skipped {provider}.[/dim]")
-        _print()
 
     if keys:
-        _print(
-            f"[green]{len(keys)} key(s) collected.[/green]  "
-            "Would you like to encrypt and save them to config/providers.enc?"
-        )
-        save = _prompt("Encrypt & save? [Y/n]: ").strip().lower()
-        if save not in ("n", "no"):
-            _print("\n[cyan]Launching keystore setup wizard…[/cyan]")
-            try:
-                subprocess.run(
-                    [sys.executable, "crypto/keystore.py", "setup"],
-                    cwd=str(PROJECT_ROOT),
-                    check=False,
-                )
-            except Exception as exc:
-                _print(f"[red]Keystore error: {exc}[/red]")
+        _print(f"[green]{len(keys)} key(s) collected.[/green]")
+        save = _prompt("Encrypt & save them to config/providers.enc on the USB? [Y/n]: ")
+        if save.strip().lower() not in ("n", "no"):
+            _save_keys_encrypted(keys)
     else:
         _print(
-            "[yellow]No keys entered — add them later with:[/yellow]\n"
+            "[yellow]No keys entered — add them later in the app (API Keys) or with:[/yellow]\n"
             "  python crypto/keystore.py setup"
         )
 
     return keys
+
+
+def _save_keys_encrypted(keys: dict[str, str]) -> None:
+    """Write *keys* into the encrypted keystore (asks for the passphrase)."""
+    try:
+        from crypto.keystore import KeyStore
+    except ImportError as exc:
+        _print(f"[red]Can't encrypt yet ({exc}). Install requirements, then run "
+               "'python crypto/keystore.py setup'.[/red]")
+        return
+    ks = KeyStore()
+    try:
+        exists = os.path.isfile(ks.enc_path)
+        pw = getpass.getpass("Keystore passphrase: " if exists
+                             else "Choose a keystore passphrase: ")
+        if not pw:
+            _print("[yellow]No passphrase — not saved.[/yellow]")
+            return
+        if not exists or not ks.unlock(pw):
+            if getpass.getpass("Repeat the passphrase: ") != pw:
+                _print("[red]Passphrases didn't match — not saved.[/red]")
+                return
+            ks.init_new(pw)
+        for provider, key in keys.items():
+            ks.add(provider, "api_key", key, save=False)
+        ks.save()
+        _print("[green]Saved (encrypted) to config/providers.enc.[/green]")
+    except ValueError:
+        _print("[red]Wrong passphrase — not saved.[/red]")
+    except (KeyboardInterrupt, EOFError):
+        _print()
+    finally:
+        ks.lock()
 
 
 # ---------------------------------------------------------------------------

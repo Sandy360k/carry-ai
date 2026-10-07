@@ -319,6 +319,8 @@ def boot(args: argparse.Namespace) -> None:
     # --- Inject session ---
     session_dir = inject_session(host_os, dry_run=args.dry_run)
     log.info("Session directory: %s", session_dir)
+    # Tools (e.g. browse's throwaway browser profile) put files here too.
+    os.environ["CARRY_AI_SESSION_DIR"] = str(session_dir)
 
     # --- Decrypt API keys (api/hybrid) ---
     decrypted_keys = None
@@ -456,8 +458,11 @@ def _desktop_available() -> bool:
 def _run_desktop(context: dict) -> None:
     """Run the desktop app on the main thread until closed or ejected."""
     from ui.desktop import CarryAIApp, ChatBackend
-    if isinstance(context.get("api_keys"), dict):
-        ChatBackend.preloaded_keys = context["api_keys"]
+    # One dict for the whole session: keys added in the app's API keys
+    # window land here too, so they are zeroed with the rest on exit.
+    if not isinstance(context.get("api_keys"), dict):
+        context["api_keys"] = {}
+    ChatBackend.preloaded_keys = context["api_keys"]
     # Share the full boot context so the desktop app's Agent runs in the
     # same mode (local/api/hybrid) with the same model as the rest of boot.
     ChatBackend.boot_context = context

@@ -342,6 +342,10 @@ class KeyStore:
     # Persistence
     # ------------------------------------------------------------------
 
+    def save(self):
+        """Write pending changes (after add/remove with save=False)."""
+        self._save()
+
     def _save(self):
         """Encrypt current secrets and write to enc_path."""
         if not self._passphrase:
