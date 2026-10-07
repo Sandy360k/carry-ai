@@ -94,9 +94,21 @@ SKIP_DIRS = {
     ".git",
     ".gitignore",
     "python-env",       # Python runtime — never overwrite
-    "models",           # GGUF files — never overwrite
     "_dry_run_session",
 }
+
+
+def _is_model_data(rel: Path) -> bool:
+    """Downloaded model data under models/ (GGUF, voice models, registry).
+
+    models/ also holds code (catalog.py, fit.py, voice.py, …), which must
+    be updated like any other source file.
+    """
+    parts = rel.parts
+    if not parts or parts[0] != "models":
+        return False
+    return (rel.suffix.lower() == ".gguf" or rel.name == "registry.json"
+            or (len(parts) > 1 and parts[1] == "voice"))
 
 # Glob patterns that are never copied
 SKIP_PATTERNS = {"*.pyc", "*.pyo", "*.egg-info", ".DS_Store", "Thumbs.db"}
@@ -362,6 +374,8 @@ def _should_skip_path(rel: Path) -> bool:
         return True
     # Top-level dir check
     if rel.parts and rel.parts[0] in SKIP_DIRS:
+        return True
+    if _is_model_data(rel):     # GGUF / voice models — never overwrite
         return True
     name = rel.name
     for pat in SKIP_PATTERNS:
